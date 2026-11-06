@@ -1,0 +1,6 @@
+/target/
+.DS_Store
+.env
+cookies.txt
+*session*.json
+/downloads/
