@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use google_photos_cli::{
     auth::{self, Session},
-    client::{self, PhotosClient},
+    client::{self, PhotosClient, SearchOptions},
 };
 use std::path::PathBuf;
 
@@ -11,35 +11,44 @@ const EXAMPLES: &str = "GET STARTED:
   Any platform:   gphotos auth cookies /path/to/cookies.txt
   Other machine:  gphotos auth import /path/to/session.env
 
-EXAMPLES:
-  gphotos search \"birthday cake\" --json
-  gphotos people --name Emma
-  gphotos search --person Emma
-  gphotos search --person Lucy --limit 10
-  gphotos search beach --person Emma --json
-  gphotos inspect PHOTO_ID
+SEARCH EXAMPLES:
+  gphotos search \"Emma and Lucy in Philadelphia October 2026\"
+  gphotos search --person \"Emma Example\" --person \"Lucy Example\" --all --limit 500
+  gphotos search --location \"Philadelphia, Pennsylvania\" --all
+  gphotos search --location Philly --tag \"birthday cake\"
+  gphotos search --from 2026-10-01 --to 2026-10-31 --all
+  gphotos search beach --person Emma --from 2026-01-01 --to 2026-12-31
+  gphotos search \"birthday cake\" --limit 100 --json
+  gphotos search \"birthday cake\" --limit 100 --json --page-token TOKEN
+
+PHOTO METADATA AND DOWNLOAD:
   gphotos inspect PHOTO_ID --json
   gphotos download PHOTO_ID --dir ./photos
-  gphotos auth export --output session.env
-  gphotos help auth
+  gphotos help inspect
   gphotos help search
 
-SESSION STORAGE:
-  Saves one GPHOTOS_SESSION value in a private .env file. It packages browser
-  cookies, not a permanent Google API token. Normal commands never use Keychain.
-  Export/import that value between macOS, Linux, and Windows. Sessions may expire
-  or require Google verification after being copied. Browser activity does not
-  guarantee that an imported session stays valid. Use --session-file PATH to
-  choose a file; 'auth status' shows the default path without revealing secrets.
+PORTABLE AUTHENTICATION:
+  gphotos auth export --output session.env
+  gphotos auth import session.env
+  gphotos auth status
+  gphotos help auth
 
-SEARCH AND INSPECT:
-  Keywords use Google's own search. --person resolves a named face group and
-  uses Google's structured person filter. inspect lists the returned people,
-  camera settings, location, timestamps, dimensions, file size, albums and source.
-  Missing metadata stays unknown; no names are inferred from image recognition.
+One GPHOTOS_SESSION value stores the cookie bundle in a private .env file.
+Normal commands never use Keychain. This is not a permanent Google API token:
+there is no reliable single lifetime or supported OAuth refresh token. Google
+can expire/revoke it before individual cookies expire. Browser use does not
+ensure the imported session stays valid. Sign in in your browser and reimport
+fresh cookies/session data when authentication fails; export a fresh copy for
+other machines. Use --session-file PATH to select a different private file.
 
-Unofficial project; not affiliated with Google. Uses an undocumented web API.
-Read commands never modify your Google Photos library.";
+Text queries, locations, content/tag phrases and free-form dates go to Google's
+search. Explicit --from/--to bounds are verified against capture-date metadata.
+Repeated --person filters require ALL selected face-group IDs in the same photo.
+--all follows pages until completion, a result/page limit, or the soft time budget.
+Partial results have complete=false, stop_reason, and next_page_token.
+
+Unofficial project; not affiliated with Google. Read commands never modify
+Google Photos. Run 'gphotos help COMMAND' for full details.";
 
 #[derive(Parser)]
 #[command(name="gphotos", version, about="Search and download your Google Photos from the terminal", long_about="Unofficial Google Photos CLI. Reuse your Chrome session, search your existing library, and download full-size media. Portable cookie/session import supports macOS, Linux, and Windows. Direct Chrome import currently supports macOS.", after_help=EXAMPLES)]
@@ -53,13 +62,16 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Import, check, refresh, or remove the locally saved session
+    #[command(
+        after_help = "SESSION LIFETIME AND REFRESH:\n  gphotos auth status\n\nNo single guaranteed expiry exists: GPHOTOS_SESSION packages several cookies.\nGoogle can revoke it before their expiry dates. There is no supported OAuth\nrefresh token for this method. Normal commands persist returned cookie updates\nto the selected .env file, but cannot renew a revoked Google login.\n\nWhen authentication fails:\n  1. Sign in / complete any verification at photos.google.com in your browser.\n  2. macOS: gphotos auth chrome; any OS: gphotos auth cookies /path/to/cookies.txt\n  3. gphotos auth status\n  4. gphotos auth export --output new-session.env\n     On another machine: gphotos auth import new-session.env\n\nExport destinations must be new files; existing exports are not overwritten."
+    )]
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
     },
-    /// Search by keyword or a tagged person's named face group
+    /// Search Google's text, people, places, dates, and content; paginate long lists
     #[command(
-        after_help = "EXAMPLES:\n  gphotos search \"birthday cake\"\n  gphotos search --person Emma\n  gphotos search --person Lucy --json\n  gphotos search beach --person Emma\n\n--person resolves a unique named Google Photos face group. Full names and\n--person-id disambiguate people with similar names; see 'gphotos people'.\nWith a keyword, the CLI verifies that each keyword result has the selected\nface-group tag (up to 100 candidates per command; continue with --page-token).\nJSON includes person, next_page_token and complete. Continue with the same\nquery/person/account and --page-token TOKEN. --download saves displayed results."
+        after_help = "EXAMPLES:\n  gphotos search \"Philadelphia October 2026\"\n  gphotos search --location Philly\n  gphotos search --tag beach\n  gphotos search --person \"Emma Example\" --person \"Lucy Example\" --all --limit 500\n  gphotos search --from 2026-10-01 --to 2026-10-31 --all\n  gphotos search beach --limit 100 --json --page-token TOKEN\n\nThe single query is sent to Google Photos just like browser search. --location\nand --tag add text terms; they are not strict GPS or custom-tag predicates.\nGoogle interprets synonyms, place names, objects, and free-form date phrases.\n\nRepeat --person and/or --person-id for AND: every selected person must be tagged\nin the same photo. Names must resolve uniquely; full names disambiguate them.\nMultiple people and person+keyword searches verify exact per-photo face-group IDs.\nUnknown tags are excluded; no identities are inferred from images or filenames.\n\n--from/--to are inclusive YYYY-MM-DD capture dates in each photo's returned time\nzone. Unknown dates are excluded. Date-only searches use Google's chronological\nlibrary, positioned at --to; all other text/place/content matching stays Google's.\n\nDefault: 20 matches, up to 100 candidates when local verification is needed.\n--all follows pages automatically: default cap 10000 matches, 1000 pages, 120s\nsoft budget. --limit and --max-seconds override caps. Ordinary keyword results\nuse Google's most-relevant set; --all uses its recent matching set for bulk paging.\nThese Google result sets can differ. JSON includes ordering, people, person_match,\ncandidates_checked, complete, stop_reason, and next_page_token. If incomplete,\nrepeat the identical filters and --all setting with --page-token TOKEN.\n--download DIRECTORY downloads displayed matches without changing the library."
     )]
     Search(SearchArgs),
     /// List Google's returned face groups and their IDs (named groups by default)
@@ -73,9 +85,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show photo metadata and Google Photos' tagged people
+    /// Show full available photo metadata: filename, camera/lens, coordinates, dates, caption, people
     #[command(
-        after_help = "EXAMPLES:\n  gphotos inspect PHOTO_ID\n  gphotos inspect PHOTO_ID --json\n\nShows camera make/model, exposure, aperture, focal length, ISO, location\ncoordinates and labels, dates, dimensions, file size, source, albums,\nstorage quality, and tagged people when Google returns those fields.\nMissing fields are null. people_status=not_returned does not imply that\nno people appear in the image. This shows Google's metadata, not all\npossible EXIF fields or newly inferred identities."
+        alias = "get",
+        after_help = "EXAMPLES:\n  gphotos inspect PHOTO_ID\n  gphotos inspect PHOTO_ID --json\n  gphotos get PHOTO_ID --json\n\nJSON includes filename, caption (also description), taken_at and uploaded_at\nwith timezone, dimensions, file size, camera make/model, lens when supplied,\nfocal length, aperture, ISO, exposure time, latitude/longitude, location labels,\nGoogle-tagged people, albums, source and storage attributes. Missing fields\nremain null. people_status=not_returned does not mean nobody is in the image.\nThis is Google's available metadata, not a promise of every possible EXIF tag."
     )]
     Inspect {
         id: String,
@@ -141,13 +154,31 @@ struct SearchArgs {
     query: Option<String>,
     /// Named tagged person (unique full or partial face-group name)
     #[arg(long)]
-    person: Option<String>,
+    person: Vec<String>,
     /// Exact face-group ID from 'gphotos people'
-    #[arg(long, conflicts_with = "person")]
-    person_id: Option<String>,
-    /// Maximum results returned (1–1000); use pagination for more
-    #[arg(long, default_value_t=20, value_parser=clap::value_parser!(u32).range(1..=1000))]
-    limit: u32,
+    #[arg(long)]
+    person_id: Vec<String>,
+    /// Location phrase sent unchanged to Google's search (e.g. Philly)
+    #[arg(long)]
+    location: Option<String>,
+    /// Content/tag phrase sent to Google's search; repeat to add terms
+    #[arg(long)]
+    tag: Vec<String>,
+    /// Inclusive capture-date lower bound, YYYY-MM-DD
+    #[arg(long)]
+    from: Option<String>,
+    /// Inclusive capture-date upper bound, YYYY-MM-DD
+    #[arg(long)]
+    to: Option<String>,
+    /// Follow Google result pages automatically (default cap: 10000 matches)
+    #[arg(long)]
+    all: bool,
+    /// Soft time budget checked between requests; partial results include a cursor
+    #[arg(long,default_value_t=120,value_parser=clap::value_parser!(u64).range(1..=86400))]
+    max_seconds: u64,
+    /// Maximum matches (default 20, or 10000 with --all)
+    #[arg(long,value_parser=clap::value_parser!(u32).range(1..=10000))]
+    limit: Option<u32>,
     /// Continue the same search using next_page_token from JSON output
     #[arg(long)]
     page_token: Option<String>,
@@ -275,27 +306,39 @@ fn run(cli: Cli) -> Result<()> {
             println!("Local session file cleared. Chrome and exported copies remain signed in. Unset GPHOTOS_SESSION too if you supplied it in your shell.");
         }
         Command::Search(args) => {
-            let query = args.query.as_deref().unwrap_or("").trim();
-            if query.is_empty() && args.person.is_none() && args.person_id.is_none() {
-                bail!("Provide a search query or --person NAME. See 'gphotos help search'");
+            let dates = google_photos_cli::search::DateRange::parse(
+                args.from.as_deref(),
+                args.to.as_deref(),
+            )?;
+            let query = google_photos_cli::search::compose_query(
+                args.query.as_deref(),
+                args.location.as_deref(),
+                &args.tag,
+            );
+            if query.is_empty()
+                && args.person.is_empty()
+                && args.person_id.is_empty()
+                && !dates.active()
+            {
+                bail!("Provide a search query, --person NAME, --location PLACE, --tag TERM, or --from/--to dates. See 'gphotos help search'");
             }
-            if !query.is_empty() && (args.person.is_some() || args.person_id.is_some()) {
-                eprintln!(
-                    "Verifying the selected person on keyword results (up to 100 candidates)…"
-                );
+            let count = args.person.len() + args.person_id.len();
+            if count > 1 || (count > 0 && (!query.is_empty() || dates.active())) {
+                eprintln!("Verifying that every selected person is tagged in each result…");
             }
             with_saved(|client| {
-                let result = if args.person.is_some() || args.person_id.is_some() {
-                    client.search_person(
-                        query,
-                        args.person.as_deref(),
-                        args.person_id.as_deref(),
-                        args.limit as usize,
-                        args.page_token.as_deref(),
-                    )?
-                } else {
-                    client.search(query, args.limit as usize, args.page_token.as_deref())?
-                };
+                let result = client.search_people(
+                    &query,
+                    &args.person,
+                    &args.person_id,
+                    SearchOptions {
+                        limit: args.limit.unwrap_or(if args.all { 10000 } else { 20 }) as usize,
+                        all: args.all,
+                        max_seconds: args.max_seconds,
+                        dates,
+                    },
+                    args.page_token.as_deref(),
+                )?;
                 let mut downloads = Vec::new();
                 let mut failures = Vec::new();
                 if let Some(dir) = &args.download {
@@ -320,13 +363,18 @@ fn run(cli: Cli) -> Result<()> {
                     print_json(&value)?;
                 } else {
                     println!("{} result(s) for {:?}", result.items.len(), result.query);
-                    if let Some(person) = &result.person {
+                    if !result.people.is_empty() {
                         println!(
-                            "Tagged person: {} ({})",
-                            person.name.as_deref().unwrap_or("unnamed"),
-                            person.id
+                            "Tagged people (ALL required): {}",
+                            result
+                                .people
+                                .iter()
+                                .map(|p| p.name.as_deref().unwrap_or(&p.id))
+                                .collect::<Vec<_>>()
+                                .join(" AND ")
                         );
                     }
+                    println!("Search status: {}", result.stop_reason);
                     for item in &result.items {
                         println!(
                             "{}  {}  {}  {}",
@@ -340,6 +388,12 @@ fn run(cli: Cli) -> Result<()> {
                         eprintln!(
                             "Skipped {} result(s) whose people metadata was unavailable.",
                             result.people_metadata_unavailable
+                        );
+                    }
+                    if result.date_metadata_unavailable > 0 {
+                        eprintln!(
+                            "Skipped {} result(s) with unavailable capture dates.",
+                            result.date_metadata_unavailable
                         );
                     }
                     if let Some(token) = &result.next_page_token {
@@ -501,7 +555,7 @@ fn print_inspection(info: &google_photos_cli::protocol::Inspection) {
         println!("Tagged people: unavailable (Google returned no face-group metadata)");
     }
     if let Some(description) = &info.description {
-        println!("Description: {description}");
+        println!("Caption: {description}");
     }
     if !info.albums.is_empty() {
         println!(
@@ -524,5 +578,55 @@ fn main() {
     if let Err(err) = run(Cli::parse()) {
         eprintln!("Error: {err:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod argument_tests {
+    use super::*;
+    #[test]
+    fn one_search_command_accepts_all_search_tactics_and_long_list_controls() {
+        let cli = Cli::try_parse_from([
+            "gphotos",
+            "search",
+            "birthday",
+            "--person",
+            "Alice Example",
+            "--person",
+            "Bob Example",
+            "--location",
+            "Philly",
+            "--tag",
+            "cake",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-12-31",
+            "--all",
+            "--limit",
+            "500",
+            "--max-seconds",
+            "300",
+            "--json",
+        ])
+        .unwrap();
+        let Command::Search(args) = cli.command else {
+            panic!("wrong command")
+        };
+        assert_eq!(args.person, vec!["Alice Example", "Bob Example"]);
+        assert_eq!(args.location.as_deref(), Some("Philly"));
+        assert_eq!(args.tag, vec!["cake"]);
+        assert!(args.all);
+        assert_eq!(args.limit, Some(500));
+        assert_eq!(args.max_seconds, 300);
+    }
+    #[test]
+    fn free_form_browser_query_is_a_single_unchanged_argument() {
+        let query = "Alice and Bob in Philadelphia October 2026";
+        let cli = Cli::try_parse_from(["gphotos", "search", query]).unwrap();
+        let Command::Search(args) = cli.command else {
+            panic!("wrong command")
+        };
+        assert_eq!(args.query.as_deref(), Some(query));
     }
 }

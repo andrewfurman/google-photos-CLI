@@ -16,6 +16,24 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone)]
+pub struct SearchOptions {
+    pub limit: usize,
+    pub all: bool,
+    pub max_seconds: u64,
+    pub dates: crate::search::DateRange,
+}
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self {
+            limit: 20,
+            all: false,
+            max_seconds: 120,
+            dates: crate::search::DateRange::default(),
+        }
+    }
+}
+
 pub struct PhotosClient {
     http: Client,
     cookies: Arc<CookieStoreMutex>,
@@ -35,6 +53,11 @@ pub struct SearchResult {
     pub candidates_checked: usize,
     pub people_metadata_unavailable: usize,
     pub person_filter: Option<String>,
+    pub people: Vec<protocol::Person>,
+    pub person_match: String,
+    pub date_range: Value,
+    pub date_metadata_unavailable: usize,
+    pub stop_reason: String,
 }
 #[derive(Serialize, Deserialize)]
 struct Cursor {
@@ -133,6 +156,25 @@ impl PhotosClient {
         self.session.save_store(&store)
     }
     pub fn rpc(&mut self, rpc: &str, payload: Value) -> Result<Value> {
+        let framing = json!([[[rpc, payload.to_string(), null, "cli"]]]).to_string();
+        protocol::rpc_data(&self.rpc_body(rpc, framing)?, rpc)
+    }
+    pub fn rpc_batch(&mut self, rpc: &str, payloads: &[Value]) -> Result<Vec<Value>> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+        if payloads.len() > 20 {
+            bail!("Metadata batches are limited to 20 photos");
+        }
+        let requests = payloads
+            .iter()
+            .enumerate()
+            .map(|(i, p)| json!([rpc, p.to_string(), null, format!("p{i}")]))
+            .collect::<Vec<_>>();
+        let body = self.rpc_body(rpc, json!([requests]).to_string())?;
+        protocol::rpc_batch_data(&body, rpc, payloads.len())
+    }
+    fn rpc_body(&mut self, rpc: &str, framing: String) -> Result<String> {
         let wait = Duration::from_millis(350).saturating_sub(self.last_request.elapsed());
         std::thread::sleep(wait);
         let path = self.globals["Im6cmf"]
@@ -143,7 +185,6 @@ impl PhotosClient {
         }
         let endpoint = format!("https://photos.google.com{path}/data/batchexecute");
         let source = format!("/u/{}/", self.session.account_index);
-        let framing = json!([[[rpc, payload.to_string(), null, "cli"]]]).to_string();
         let response = network(
             self.http
                 .post(endpoint)
@@ -179,7 +220,7 @@ impl PhotosClient {
         if !status.is_success() {
             bail!("Google Photos RPC returned HTTP {status}; sign in with Chrome and reimport if authentication expired");
         }
-        protocol::rpc_data(&network(response.text())?, rpc)
+        network(response.text())
     }
     pub fn people(&mut self) -> Result<Vec<protocol::Person>> {
         let data = self.rpc("yQelMe", json!([null, null, null, [[1, null, 1]]]))?;
@@ -197,7 +238,16 @@ impl PhotosClient {
         limit: usize,
         token: Option<&str>,
     ) -> Result<SearchResult> {
-        self.search_filtered(query, limit, token, None)
+        self.search_people(
+            query,
+            &[],
+            &[],
+            SearchOptions {
+                limit,
+                ..SearchOptions::default()
+            },
+            token,
+        )
     }
     pub fn search_person(
         &mut self,
@@ -207,71 +257,60 @@ impl PhotosClient {
         limit: usize,
         token: Option<&str>,
     ) -> Result<SearchResult> {
-        let people = self.people()?;
-        let person = if let Some(id) = person_id {
-            check_id(id)?;
-            people
-                .into_iter()
-                .find(|p| p.id == id)
-                .unwrap_or(protocol::Person {
-                    id: id.into(),
-                    name: None,
-                })
+        self.search_people(
+            query,
+            &name.map(str::to_owned).into_iter().collect::<Vec<_>>(),
+            &person_id.map(str::to_owned).into_iter().collect::<Vec<_>>(),
+            SearchOptions {
+                limit,
+                ..SearchOptions::default()
+            },
+            token,
+        )
+    }
+    pub fn search_people(
+        &mut self,
+        query: &str,
+        names: &[String],
+        ids: &[String],
+        options: SearchOptions,
+        token: Option<&str>,
+    ) -> Result<SearchResult> {
+        let index = if names.is_empty() && ids.is_empty() {
+            Vec::new()
         } else {
-            let name = name.unwrap_or("").trim();
-            if name.is_empty() {
-                bail!("--person must not be empty");
-            }
-            let mut matches = people
-                .into_iter()
-                .filter(|p| {
-                    p.name
-                        .as_deref()
-                        .is_some_and(|n| n.to_lowercase().contains(&name.to_lowercase()))
-                })
-                .collect::<Vec<_>>();
-            let exact = matches
-                .iter()
-                .filter(|p| {
-                    p.name
-                        .as_deref()
-                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if exact.len() == 1 {
-                exact[0].clone()
-            } else if matches.len() == 1 {
-                matches.remove(0)
-            } else if matches.is_empty() {
-                bail!("No named Google Photos face group matches {name:?}. Use 'gphotos people --name NAME' to check the groups Google returned");
-            } else {
-                bail!("More than one face group matches {name:?}. Use the full name or --person-id from 'gphotos people --name NAME'");
-            }
+            self.people()?
         };
-        self.search_filtered(query, limit, token, Some(person))
+        let people = resolve_people(&index, names, ids)?;
+        self.search_filtered(query, people, options, token)
     }
     fn search_filtered(
         &mut self,
         query: &str,
-        limit: usize,
+        people: Vec<protocol::Person>,
+        options: SearchOptions,
         token: Option<&str>,
-        person: Option<protocol::Person>,
     ) -> Result<SearchResult> {
         let query = query.trim();
-        if query.is_empty() && person.is_none() {
-            bail!("Provide a keyword query or --person NAME");
+        if query.is_empty() && people.is_empty() && !options.dates.active() {
+            bail!("Provide a search query, --person NAME, or --from/--to dates");
         }
-        if !(1..=1000).contains(&limit) {
-            bail!("limit must be between 1 and 1000");
+        if !(1..=10000).contains(&options.limit) || options.max_seconds == 0 {
+            bail!("limit must be 1–10000 and max-seconds must be positive");
         }
-        let verify_person = person.is_some() && !query.is_empty();
-        let ordering = if query.is_empty() {
+        let started = Instant::now();
+        let deadline = Duration::from_secs(options.max_seconds);
+        let timeline = query.is_empty() && options.dates.active();
+        let verify_people =
+            !people.is_empty() && (!query.is_empty() || people.len() > 1 || timeline);
+        let required = people.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        let ordering = if query.is_empty() || options.all {
             "recent"
         } else {
             "relevant"
         };
-        let scope=json!({"query":query,"person":person.as_ref().map(|p|p.id.as_str()),"ordering":ordering,"verified_tags":verify_person}).to_string();
+        let date_range = json!({"from":options.dates.from.map(|d|d.to_string()),"to":options.dates.to.map(|d|d.to_string())});
+        let scope=json!({"query":query,"people":required,"ordering":ordering,"dates":date_range,"timeline":timeline}).to_string();
         let mut cursor = decode_cursor(token, &scope, self.session.account_index)?;
         let mut items = Vec::new();
         let mut pages = 0;
@@ -280,20 +319,58 @@ impl PhotosClient {
         let mut next = None;
         let mut candidates_checked = 0;
         let mut people_metadata_unavailable = 0;
+        let mut date_metadata_unavailable = 0;
+        let mut stop_reason = "complete".to_owned();
         let mut stop = false;
+        let candidate_limit = if options.all {
+            usize::MAX
+        } else if verify_people || options.dates.active() {
+            100
+        } else {
+            usize::MAX
+        };
         loop {
-            if !seen_pages.insert(cursor.server_token.clone()) {
-                bail!("Google repeated a search cursor; stopped rather than returning incomplete results as complete");
+            if pages > 0 && started.elapsed() >= deadline {
+                next = Some(encode_cursor(&Cursor {
+                    query: scope.clone(),
+                    server_token: cursor.server_token.clone(),
+                    offset: cursor.offset,
+                    account: self.session.account_index,
+                })?);
+                stop_reason = "time_limit".into();
+                break;
             }
-            let payload = if query.is_empty() {
-                protocol::person_search_payload(
-                    &person.as_ref().unwrap().id,
-                    cursor.server_token.as_deref(),
+            if !seen_pages.insert(cursor.server_token.clone()) {
+                bail!("Google repeated a search cursor; stopped rather than claiming complete results");
+            }
+            let (rpc, payload) = if timeline {
+                (
+                    "lcxiM",
+                    json!([
+                        cursor.server_token,
+                        options.dates.server_before_ms(),
+                        100,
+                        null,
+                        1,
+                        3
+                    ]),
+                )
+            } else if query.is_empty() {
+                (
+                    "EzkLib",
+                    protocol::person_search_payload(&people[0].id, cursor.server_token.as_deref()),
                 )
             } else {
-                protocol::keyword_search_payload(query, cursor.server_token.as_deref())
+                (
+                    "EzkLib",
+                    protocol::keyword_search_payload_ordered(
+                        query,
+                        cursor.server_token.as_deref(),
+                        options.all,
+                    ),
+                )
             };
-            let data = self.rpc("EzkLib", payload)?;
+            let data = self.rpc(rpc, payload)?;
             let (mut rows, server_next) = protocol::parse_page(&data)?;
             for item in &mut rows {
                 item.url = format!(
@@ -305,17 +382,53 @@ impl PhotosClient {
             if cursor.offset > rows.len() {
                 bail!("Search results changed; rerun without --page-token");
             }
+            let mut metadata = std::collections::HashMap::<String, Option<bool>>::new();
             for (index, item) in rows.iter().enumerate().skip(cursor.offset) {
+                if started.elapsed() >= deadline {
+                    next = Some(encode_cursor(&Cursor {
+                        query: scope.clone(),
+                        server_token: cursor.server_token.clone(),
+                        offset: index,
+                        account: self.session.account_index,
+                    })?);
+                    stop_reason = "time_limit".into();
+                    stop = true;
+                    break;
+                }
                 if seen_ids.insert(item.id.clone()) {
                     candidates_checked += 1;
-                    let matches = if verify_person {
-                        let data = self.rpc("fDcn4b", json!([item.id, 1, null, null, 1]))?;
-                        match protocol::photo_has_person(
-                            &data,
-                            &item.id,
-                            &person.as_ref().unwrap().id,
-                        )? {
-                            Some(matches) => matches,
+                    let date_matches = match options.dates.matches(item.taken_at.as_deref()) {
+                        Some(value) => value,
+                        None => {
+                            date_metadata_unavailable += 1;
+                            false
+                        }
+                    };
+                    let people_match = if date_matches && verify_people {
+                        if !metadata.contains_key(&item.id) {
+                            let mut batch_ids = std::collections::HashSet::new();
+                            let candidates = rows[index..]
+                                .iter()
+                                .take(20)
+                                .filter(|p| {
+                                    options.dates.matches(p.taken_at.as_deref()) == Some(true)
+                                        && batch_ids.insert(p.id.clone())
+                                })
+                                .collect::<Vec<_>>();
+                            let payloads = candidates
+                                .iter()
+                                .map(|p| json!([p.id, 1, null, null, 1]))
+                                .collect::<Vec<_>>();
+                            let values = self.rpc_batch("fDcn4b", &payloads)?;
+                            for (photo, value) in candidates.iter().zip(values) {
+                                metadata.insert(
+                                    photo.id.clone(),
+                                    protocol::photo_has_people(&value, &photo.id, &required)?,
+                                );
+                            }
+                        }
+                        match metadata.get(&item.id).copied().flatten() {
+                            Some(value) => value,
                             None => {
                                 people_metadata_unavailable += 1;
                                 false
@@ -324,12 +437,11 @@ impl PhotosClient {
                     } else {
                         true
                     };
-                    if matches {
+                    if date_matches && people_match {
                         items.push(item.clone());
                     }
                 }
-                if items.len() == limit || (verify_person && candidates_checked >= 100) {
-                    stop = true;
+                if items.len() >= options.limit || candidates_checked >= candidate_limit {
                     let resume = if index + 1 < rows.len() {
                         Some((cursor.server_token.clone(), index + 1))
                     } else {
@@ -342,51 +454,87 @@ impl PhotosClient {
                             offset,
                             account: self.session.account_index,
                         })?);
+                        stop_reason = if items.len() >= options.limit {
+                            "result_limit"
+                        } else {
+                            "candidate_limit"
+                        }
+                        .into();
                     }
+                    stop = true;
                     break;
                 }
             }
+            if options.all {
+                eprintln!(
+                    "Search page {pages}: {} match(es), {candidates_checked} candidates checked",
+                    items.len()
+                );
+            }
             if stop {
+                break;
+            }
+            // The library endpoint is descending by capture timestamp. Keep a timezone margin.
+            if timeline
+                && rows
+                    .last()
+                    .is_some_and(|p| options.dates.older_than_range(p.taken_at.as_deref()))
+            {
                 break;
             }
             let Some(server_token) = server_next else {
                 break;
             };
-            if pages >= 50 {
+            if pages >= if options.all { 1000 } else { 50 } {
                 next = Some(encode_cursor(&Cursor {
                     query: scope.clone(),
                     server_token: Some(server_token),
                     offset: 0,
                     account: self.session.account_index,
                 })?);
+                stop_reason = "page_limit".into();
                 break;
             }
             cursor.server_token = Some(server_token);
             cursor.offset = 0;
         }
-        if !items.is_empty() {
-            let ids: Vec<_> = items.iter().map(|p| p.id.clone()).collect();
+        // Avoid oversized filename payloads for long result lists.
+        for chunk in items.chunks_mut(500) {
+            let ids = chunk.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
             let data = self.rpc("EWgK9e", protocol::batch_payload(&ids))?;
-            protocol::filenames(&data, &mut items);
+            protocol::filenames(&data, chunk);
         }
         Ok(SearchResult {
             query: query.into(),
+            person: if people.len() == 1 {
+                Some(people[0].clone())
+            } else {
+                None
+            },
+            person_filter: if people.is_empty() {
+                None
+            } else {
+                Some(
+                    if verify_people {
+                        "verified_photo_tags"
+                    } else {
+                        "google_face_group"
+                    }
+                    .into(),
+                )
+            },
+            people,
+            person_match: "all".into(),
             items,
             complete: next.is_none(),
             next_page_token: next,
             pages_fetched: pages,
-            person_filter: person.as_ref().map(|_| {
-                if verify_person {
-                    "verified_photo_tags"
-                } else {
-                    "google_face_group"
-                }
-                .into()
-            }),
-            person,
             ordering: ordering.into(),
             candidates_checked,
             people_metadata_unavailable,
+            date_metadata_unavailable,
+            date_range,
+            stop_reason,
         })
     }
     pub fn download(
@@ -459,6 +607,61 @@ impl PhotosClient {
         })
     }
 }
+fn resolve_people(
+    index: &[protocol::Person],
+    names: &[String],
+    ids: &[String],
+) -> Result<Vec<protocol::Person>> {
+    let mut resolved = Vec::new();
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("--person must not be empty");
+        }
+        let exact = index
+            .iter()
+            .filter(|p| {
+                p.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })
+            .collect::<Vec<_>>();
+        let matches = if exact.is_empty() {
+            index
+                .iter()
+                .filter(|p| {
+                    p.name
+                        .as_deref()
+                        .is_some_and(|n| n.to_lowercase().contains(&name.to_lowercase()))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            exact
+        };
+        match matches.as_slice(){
+            [person]=>resolved.push((*person).clone()),
+            []=>bail!("No named face group matches {name:?}. Check 'gphotos people --name NAME'"),
+            _=>bail!("More than one face group matches {name:?}. Use the full name or --person-id from 'gphotos people --name NAME'"),
+        }
+    }
+    for id in ids {
+        check_id(id)?;
+        resolved.push(
+            index
+                .iter()
+                .find(|p| p.id == *id)
+                .cloned()
+                .unwrap_or(protocol::Person {
+                    id: id.clone(),
+                    name: None,
+                }),
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    resolved.retain(|p| seen.insert(p.id.clone()));
+    Ok(resolved)
+}
+
 pub fn check_id(id: &str) -> Result<()> {
     if !(8..=256).contains(&id.len())
         || !id
@@ -578,5 +781,57 @@ mod tests {
             3
         );
         assert_eq!(out, b"abc");
+    }
+}
+
+#[cfg(test)]
+mod people_resolution_tests {
+    use super::*;
+    fn index() -> Vec<protocol::Person> {
+        vec![
+            protocol::Person {
+                id: "group-alice-id".into(),
+                name: Some("Alice Example".into()),
+            },
+            protocol::Person {
+                id: "group-bob-id".into(),
+                name: Some("Bob Example".into()),
+            },
+            protocol::Person {
+                id: "group-bob-other-id".into(),
+                name: Some("Bob Other".into()),
+            },
+        ]
+    }
+    #[test]
+    fn multiple_names_resolve_once_and_duplicate_constraints_are_removed() {
+        let groups = resolve_people(
+            &index(),
+            &["Alice".into(), "Bob Example".into(), "Alice".into()],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[1].id, "group-bob-id");
+        assert!(resolve_people(&index(), &["Bob".into()], &[]).is_err());
+        assert!(resolve_people(&index(), &["Missing".into()], &[]).is_err());
+    }
+    #[test]
+    fn pagination_tokens_are_bound_to_all_people_and_date_bounds() {
+        let scope =
+            json!({"people":["group-alice-id","group-bob-id"],"from":"2026-01-01"}).to_string();
+        let token = encode_cursor(&Cursor {
+            query: scope.clone(),
+            server_token: Some("next-google-page".into()),
+            offset: 17,
+            account: 0,
+        })
+        .unwrap();
+        assert_eq!(decode_cursor(Some(&token), &scope, 0).unwrap().offset, 17);
+        let changed = json!({"people":["group-alice-id"],"from":"2026-01-01"}).to_string();
+        assert!(decode_cursor(Some(&token), &changed, 0).is_err());
+        let changed =
+            json!({"people":["group-alice-id","group-bob-id"],"from":"2026-02-01"}).to_string();
+        assert!(decode_cursor(Some(&token), &changed, 0).is_err());
     }
 }

@@ -218,6 +218,7 @@ pub struct Inspection {
     pub url: String,
     pub filename: Option<String>,
     pub description: Option<String>,
+    pub caption: Option<String>,
     pub taken_at: Option<String>,
     pub uploaded_at: Option<String>,
     pub width: Option<u64>,
@@ -280,15 +281,32 @@ pub fn people_index(data: &Value) -> Result<Vec<Person>> {
 }
 /// Structured face-group filter captured from Google's People & Pets navigation.
 pub fn keyword_search_payload(query: &str, token: Option<&str>) -> Value {
-    json!([null, null, token, null, 100, null, 2, [query], null, [1, 1]])
+    keyword_search_payload_ordered(query, token, false)
+}
+pub fn keyword_search_payload_ordered(query: &str, token: Option<&str>, recent: bool) -> Value {
+    json!([
+        null,
+        null,
+        token,
+        null,
+        if recent { 50 } else { 100 },
+        null,
+        if recent { 1 } else { 2 },
+        [query],
+        null,
+        [1, 1]
+    ])
 }
 pub fn person_search_payload(id: &str, token: Option<&str>) -> Value {
     let face = json!([null, id]);
     let filter = json!([null, [[[[face]]]]]);
     json!([null, null, token, null, 50, null, 1, filter])
 }
-/// None means Google did not supply face metadata; it is never treated as a match.
+/// None means Google supplied no face metadata; it is never treated as a match.
 pub fn photo_has_person(ext: &Value, photo_id: &str, person_id: &str) -> Result<Option<bool>> {
+    photo_has_people(ext, photo_id, &[person_id.to_owned()])
+}
+pub fn photo_has_people(ext: &Value, photo_id: &str, required: &[String]) -> Result<Option<bool>> {
     let item = field(ext, 0);
     if item.is_null() {
         return Ok(None);
@@ -300,7 +318,60 @@ pub fn photo_has_person(ext: &Value, photo_id: &str, person_id: &str) -> Result<
     if !tags.is_array() {
         return Ok(None);
     }
-    Ok(Some(parse_people(tags)?.iter().any(|p| p.id == person_id)))
+    let people = parse_people(tags)?;
+    Ok(Some(
+        required.iter().all(|id| people.iter().any(|p| p.id == *id)),
+    ))
+}
+/// Decode read-only batched RPCs by echoed request ID, never response arrival order.
+pub fn rpc_batch_data(body: &str, rpc: &str, count: usize) -> Result<Vec<Value>> {
+    fn collect(
+        value: &Value,
+        rpc: &str,
+        out: &mut std::collections::HashMap<String, Value>,
+    ) -> Result<()> {
+        let Some(a) = value.as_array() else {
+            return Ok(());
+        };
+        if a.first().and_then(Value::as_str) == Some("wrb.fr")
+            && a.get(1).and_then(Value::as_str) == Some(rpc)
+        {
+            let id = a
+                .get(6)
+                .and_then(Value::as_str)
+                .context("Batched RPC has no request ID")?;
+            let text = a.get(2).and_then(Value::as_str).context(
+                "Google rejected a batched metadata request; refresh the session if necessary",
+            )?;
+            if out
+                .insert(
+                    id.into(),
+                    serde_json::from_str(text).context("Malformed batched metadata")?,
+                )
+                .is_some()
+            {
+                bail!("Duplicate batched metadata response ID");
+            }
+        } else {
+            for child in a {
+                collect(child, rpc, out)?;
+            }
+        }
+        Ok(())
+    }
+    let mut values = std::collections::HashMap::new();
+    for line in body.lines().filter(|l| l.contains("wrb.fr")) {
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            collect(&v, rpc, &mut values)?;
+        }
+    }
+    (0..count)
+        .map(|i| {
+            values
+                .remove(&format!("p{i}"))
+                .context("Google omitted a batched metadata response")
+        })
+        .collect()
 }
 pub fn parse_inspection(ext: &Value, info: &Value, id: &str, account: u32) -> Result<Inspection> {
     let item = field(ext, 0);
@@ -408,6 +479,7 @@ pub fn parse_inspection(ext: &Value, info: &Value, id: &str, account: u32) -> Re
         url: format!("https://photos.google.com/u/{account}/photo/{id}"),
         filename: string(field(item, 2)),
         description: string(field(item, 1)),
+        caption: string(field(item, 1)),
         taken_at: timestamp(field(item, 3), field(item, 4)),
         uploaded_at: timestamp(field(base, 5), field(base, 4)),
         width: field(item, 6).as_u64(),
@@ -435,6 +507,7 @@ mod inspection_tests {
     fn photo(people: Value) -> Value {
         let mut item = vec![Value::Null; 34];
         item[0] = json!("synthetic-photo-id");
+        item[1] = json!("A sample caption");
         item[2] = json!("photo.jpg");
         item[3] = json!(1700000000000i64);
         item[4] = json!(-18000000);
@@ -448,7 +521,15 @@ mod inspection_tests {
             [[null, [["Sample City", null, 1]]]]
         ]);
         item[18] = people;
-        item[23] = json!(["Example", "Camera 1", null, 6.93, 4.0, 320, 0.008333]);
+        item[23] = json!([
+            "Example",
+            "Camera 1",
+            "Example 24–70mm",
+            6.93,
+            4.0,
+            320,
+            0.008333
+        ]);
         json!([item])
     }
     #[test]
@@ -484,7 +565,15 @@ mod inspection_tests {
         assert_eq!(value.people[0].name.as_deref(), Some("Alice"));
         assert!(value.people[1].name.is_none());
         assert_eq!(value.people_status, "available");
-        assert_eq!(value.camera.unwrap().iso, Some(320));
+        assert_eq!(value.filename.as_deref(), Some("photo.jpg"));
+        assert_eq!(value.caption.as_deref(), Some("A sample caption"));
+        assert_eq!(value.caption, value.description);
+        assert!(value.taken_at.as_deref().unwrap().ends_with("-05:00"));
+        let camera = value.camera.unwrap();
+        assert_eq!(camera.make.as_deref(), Some("Example"));
+        assert_eq!(camera.model.as_deref(), Some("Camera 1"));
+        assert_eq!(camera.lens.as_deref(), Some("Example 24–70mm"));
+        assert_eq!(camera.iso, Some(320));
         let location = value.location.unwrap();
         assert_eq!(location.latitude, Some(40.0));
         assert_eq!(location.longitude, Some(-75.0));
@@ -544,5 +633,56 @@ mod inspection_tests {
         assert_eq!(keywords[7][0], "birthday cake");
         assert_eq!(keywords[2], "next-page");
         assert_eq!(keywords[6], 2);
+    }
+}
+
+#[cfg(test)]
+mod multi_person_tests {
+    use super::*;
+    #[test]
+    fn both_people_means_and_not_or_even_when_labels_are_identical() {
+        let mut item = vec![Value::Null; 19];
+        item[0] = json!("photo-example-id");
+        item[18] = json!([[["group-a-id"], [null, null, null, null, null, "Same name"]]]);
+        let required = vec!["group-a-id".into(), "group-b-id".into()];
+        assert_eq!(
+            photo_has_people(&json!([item.clone()]), "photo-example-id", &required).unwrap(),
+            Some(false)
+        );
+        item[18].as_array_mut().unwrap().push(json!([
+            ["group-b-id"],
+            [null, null, null, null, null, "Same name"]
+        ]));
+        assert_eq!(
+            photo_has_people(&json!([item]), "photo-example-id", &required).unwrap(),
+            Some(true)
+        );
+    }
+    #[test]
+    fn batched_metadata_is_matched_by_id_when_google_reorders_responses() {
+        let body = json!([
+            [
+                "wrb.fr",
+                "fDcn4b",
+                json!(["second"]).to_string(),
+                null,
+                null,
+                null,
+                "p1"
+            ],
+            [
+                "wrb.fr",
+                "fDcn4b",
+                json!(["first"]).to_string(),
+                null,
+                null,
+                null,
+                "p0"
+            ]
+        ])
+        .to_string();
+        let values = rpc_batch_data(&body, "fDcn4b", 2).unwrap();
+        assert_eq!(values, vec![json!(["first"]), json!(["second"])]);
+        assert!(rpc_batch_data(&body, "fDcn4b", 3).is_err());
     }
 }

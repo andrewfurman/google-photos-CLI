@@ -128,34 +128,84 @@ gphotos download PHOTO_ID --output ./exact-filename.jpg --json
 gphotos search "Paris 2025" --limit 10 --download ./photos
 ```
 
-### Tagged people
+### One search command, several ways to use it
 
-`--person` resolves the name against Google's returned **People & Pets face
-groups**, then searches using the selected **face-group ID**. It does not simply
-add the name to a keyword query. A unique full or partial name works. If names
-are ambiguous, use the full name or an explicit ID:
+The positional query goes to Google Photos' search, like the browser search bar.
+Use your own people names, place names, dates, objects, or other search phrases:
 
 ```bash
-gphotos people --name Alex --json
-gphotos search --person-id FACE_GROUP_ID
+gphotos search "Emma and Lucy in Philadelphia October 2026"
+gphotos search "Philly"
+gphotos search "Philadelphia, Pennsylvania"
+gphotos search "birthday cake"
 ```
 
-`gphotos people` shows named groups; `--include-unnamed` includes unnamed groups.
-It reports the groups Google returned, not a guaranteed exhaustive inventory.
-A missing or ambiguous name produces an error instead of falling back to text
-search. Face grouping must be available in your account.
+Free-form query meaning and synonyms are Google's. The CLI does not geocode a
+place name, expand "Philly" itself, or run its own image-content classifier.
+For clearer scripts, these flags add text to the same Google query:
 
-`inspect` reads the per-photo face-group metadata. Each returned tag includes its
-ID and name when assigned. Unnamed groups retain their IDs. A photo owner, an
-album member, a filename, or a search term is never treated as a person tag.
-`people_status: "not_returned"` means Google did not supply the field; it does
-not imply no people appear in the image.
+```bash
+gphotos search --location "Philadelphia, Pennsylvania"
+gphotos search --location Philly --tag "birthday cake"
+```
+
+`--tag` means a content/tag **search phrase**, not a separate Google custom-tag
+API or a guaranteed exact object predicate. Repeated `--tag` terms are joined
+with the other query text. `--location` is not a strict GPS boundary filter.
+
+### Tagged people: require everyone in the same photo
+
+`--person` resolves a unique full or partial name from Google's **People & Pets
+face groups**. Repeat it for **AND**, not OR: every selected person must be tagged
+in each returned photo. Example people below are placeholders; use the names
+shown by `gphotos people` for your own library.
+
+```bash
+gphotos people --name Emma
+gphotos search --person "Emma Example" --person "Lucy Example" --all --limit 500
+gphotos search beach --person "Emma Example" --person "Lucy Example" --all
+```
+
+Ambiguous names produce an error instead of choosing someone silently. Use the
+full name or exact IDs; repeated `--person-id` filters also require **all** IDs.
+Duplicate constraints are removed. `--include-unnamed` on `people` lists unnamed
+groups too. That command reports the groups Google returned, not a guaranteed
+exhaustive inventory.
+
+People-only searches start from a Google face-group result set. Multiple-person
+searches verify the exact IDs in each photo's metadata. Person+keyword searches
+verify the selected IDs on keyword results, since Google's combined filter is
+unreliable. Metadata is fetched in read-only batches of at most 20 photos to make
+long lists practical. Unknown people metadata is excluded and counted; no names
+are inferred from image recognition, filenames, captions, or photo ownership.
+
+### Explicit date ranges
+
+Date phrases can be part of the browser-style query. For exact inclusive bounds:
+
+```bash
+gphotos search --from 2026-10-01 --to 2026-10-31 --all
+gphotos search --location Philly --from 2026-01-01 --to 2026-12-31 --all
+gphotos search --person "Emma Example" --person "Lucy Example" --from 2026-10-01 --to 2026-10-31 --all
+```
+
+Bounds must be valid `YYYY-MM-DD` dates, with `--from` on or before `--to`. The CLI
+checks **capture dates in each photo's returned timezone**; it does not use upload
+dates. A missing capture date is excluded and counted. Google Photos may group
+very early-morning photos under the prior day in its UI; the explicit CLI bounds
+use the returned calendar date.
+
+When only dates and/or people are specified, the CLI reads Google's descending
+capture-date timeline, positioned near `--to`, and verifies the selected dates and
+people. When query/location/content text is present, Google supplies matching
+photos and the CLI verifies the date bounds on those results. Dates and people
+are strict checks; text/place/content interpretation remains Google's.
 
 ### Photo metadata
 
 `gphotos inspect PHOTO_ID --json` returns the metadata exposed by the web API:
 
-- Filename, description, capture/upload time, dimensions, file size, and media type.
+- Filename, caption (`caption`, also preserved as `description`), capture/upload date/time with timezone, dimensions, file size, and media type.
 - Camera manufacturer/model, lens when available, focal length, aperture, ISO, and exposure time.
 - Latitude/longitude and Google Photos' location labels when available.
 - Tagged face groups, albums, upload source, favorites/archive flags, storage quality and usage.
@@ -165,31 +215,44 @@ Missing values remain `null`; unavailable fields are not guessed. These fields
 are Google's metadata, not a promise to expose every possible EXIF/IPTC tag.
 A location may have been estimated or edited in Google Photos.
 
-### Search results and pagination
-
-Keyword searches use Google's most-relevant result set. People-only searches use
-Google's recent ordering. JSON identifies the selected `ordering`; `complete` refers
-to that result set, not every possible match in your library. Person filtering uses
-the structured face-group filter. When combined with a keyword, the CLI instead
-checks each keyword result's per-photo tags for the exact selected group ID,
-because Google's combined filter is unreliable. It checks up to 100 candidates
-per command; use `next_page_token` to continue. Missing people metadata is excluded
-and counted in `people_metadata_unavailable`, rather than treated as a match.
-
-Results include ID, filename, date, type, dimensions, and a photo link.
-The default limit is 20; `--limit` accepts 1–1000.
-
-JSON includes `items`, `person`, `ordering`, `next_page_token`, `complete`, and `pages_fetched`.
-`complete: false` means more results may be available. To continue, use the same
-query, person, and account with the returned token:
+### Pagination and long result lists
 
 ```bash
-gphotos search --person Emma --limit 100 --json --page-token TOKEN
+# Fetch a page, then use its next_page_token with the identical filters
+gphotos search "birthday cake" --limit 100 --json
+gphotos search "birthday cake" --limit 100 --json --page-token TOKEN
+
+# Follow pages automatically; suitable for hundreds of matching photos
+gphotos search --person "Emma Example" --person "Lucy Example" --all --limit 500 --json
+
+# Allow a longer run, or continue an interrupted/limited bulk search
+gphotos search --location Philly --all --limit 1000 --max-seconds 300 --json
+gphotos search --location Philly --all --limit 1000 --max-seconds 300 --json --page-token TOKEN
 ```
 
-Each command stops after at most 50 Google search pages. Tokens preserve offsets
-within a page. Changing results between commands can affect pagination; this is
-not a transactional snapshot.
+Without `--all`, the default is 20 matches, at most 50 pages, and up to 100
+candidates when local verification is needed. With `--all`, the default caps are
+10,000 matches, 1,000 Google pages, and a 120-second **soft** time budget.
+`--limit` accepts 1–10000; `--max-seconds` accepts 1–86400. Time is checked between
+requests, so a slow in-flight request can overrun the budget.
+
+Ordinary keyword searches use Google's most-relevant set. `--all` uses Google's
+recent matching set for longer chronological pagination; those result sets can
+differ. People-only and date-only searches use recent capture-date ordering.
+
+JSON includes `items`, `people`, `person_match: "all"`, `ordering`, `date_range`,
+`candidates_checked`, missing-metadata counts, `complete`, `stop_reason`,
+`pages_fetched`, and `next_page_token`. The legacy single `person` field is
+preserved when one person is selected. A stopped search returns its collected
+matches; `complete: false` and a cursor indicate more may be available. Reasons
+include `result_limit`, `candidate_limit`, `time_limit`, and `page_limit`.
+
+Continue with the same query, people, dates, account, and `--all` setting. Tokens
+preserve offsets within a page and cannot be reused for different filters.
+Duplicate results are removed within each run. Google's changing library/search
+results can affect pagination between commands; this is not a snapshot or a
+promise to enumerate every possible match. Missing metadata may exclude photos
+even when the selected source result set is completely scanned.
 
 ### Downloads
 
@@ -240,6 +303,22 @@ directories. `GPHOTOS_SESSION` can also be supplied directly as an environment
 variable for ephemeral use; cookie updates cannot be written back to the parent
 shell's environment variable.
 
+### Session lifetime and refresh
+
+There is **no reliable single lifetime** for `GPHOTOS_SESSION`. It packages cookies
+with different expiry rules, and Google can expire or revoke access earlier than
+any listed cookie expiry. It is not a permanent API token. This browser-session
+method has no supported OAuth refresh token or guaranteed renewal endpoint.
+`gphotos auth status` checks current usability rather than promising a future
+expiry date.
+
+When authentication fails:
+
+1. Open Google Photos in your browser and sign in or complete Google's verification.
+2. Import fresh cookies: `gphotos auth chrome` on macOS, or `gphotos auth cookies FILE` on any supported platform.
+3. Run `gphotos auth status` to verify access.
+4. Export a new file with `gphotos auth export --output new-session.env`; import it on the other machine with `gphotos auth import new-session.env`.
+
 Normal file-based commands persist cookie updates. No browser keepalive runs in
 the background. Browser activity does not guarantee an imported copy stays valid.
 If it expires, sign in in your browser and import fresh cookies/session data.
@@ -252,7 +331,7 @@ gphotos logout
 Logout clears the selected local session file; it does not revoke exported copies
 or sign your browser out. Unset `GPHOTOS_SESSION` too if you supplied it in your shell.
 For users upgrading from version 0.1, `gphotos auth migrate-keychain` performs a
-one-time macOS Keychain import. Normal version 0.2 commands do not use Keychain.
+one-time macOS Keychain import. Normal current commands do not use Keychain.
 
 ## Help
 
@@ -277,7 +356,7 @@ gphotos help auth import
 | `auth migrate-keychain` | Migrate an existing 0.1 session on macOS |
 | `logout` / `auth logout` | Clear the selected local session file |
 | `people [--name NAME]` | List Google's returned face groups |
-| `search [QUERY] [--person NAME]` | Search keywords and/or tagged people |
+| `search [QUERY]` | One search interface for text, repeated people, locations, content phrases, dates, and pagination |
 | `inspect PHOTO_ID` | Read photo metadata and people tags |
 | `download PHOTO_ID` | Save full-size media |
 
@@ -314,7 +393,7 @@ cargo test --manifest-path cli/Cargo.toml --locked
 ```
 
 CI defines offline build/test jobs for Linux, Windows, and macOS.
-See [Contributing](docs/CONTRIBUTING.md) for additional guidance.
+See [Contributing](docs/CONTRIBUTING.md) for additional guidance and [Testing](docs/TESTING.md) for coverage and opt-in live verification.
 
 - Use synthetic test data. Never commit session values, cookie files, account captures, real locations, face-group data, or downloaded media.
 - Keep `sample.env` to one placeholder session value and keep populated `.env` files ignored.
