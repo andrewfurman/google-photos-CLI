@@ -420,6 +420,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -556,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "google-photos-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -567,6 +573,7 @@ dependencies = [
  "clap",
  "cookie_store",
  "dirs",
+ "dotenvy",
  "pbkdf2",
  "regex",
  "reqwest",
