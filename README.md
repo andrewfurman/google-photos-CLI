@@ -170,8 +170,13 @@ A location may have been estimated or edited in Google Photos.
 Keyword searches use Google's most-relevant result set. People-only searches use
 Google's recent ordering. JSON identifies the selected `ordering`; `complete` refers
 to that result set, not every possible match in your library. Person filtering uses
-the structured face-group filter; when combined with a keyword, both are sent
-to Google. Results include ID, filename, date, type, dimensions, and a photo link.
+the structured face-group filter. When combined with a keyword, the CLI instead
+checks each keyword result's per-photo tags for the exact selected group ID,
+because Google's combined filter is unreliable. It checks up to 100 candidates
+per command; use `next_page_token` to continue. Missing people metadata is excluded
+and counted in `people_metadata_unavailable`, rather than treated as a match.
+
+Results include ID, filename, date, type, dimensions, and a photo link.
 The default limit is 20; `--limit` accepts 1–1000.
 
 JSON includes `items`, `person`, `ordering`, `next_page_token`, `complete`, and `pages_fetched`.

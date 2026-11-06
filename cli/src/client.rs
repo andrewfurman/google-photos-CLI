@@ -32,6 +32,9 @@ pub struct SearchResult {
     pub pages_fetched: usize,
     pub person: Option<protocol::Person>,
     pub ordering: String,
+    pub candidates_checked: usize,
+    pub people_metadata_unavailable: usize,
+    pub person_filter: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Cursor {
@@ -262,24 +265,31 @@ impl PhotosClient {
         if !(1..=1000).contains(&limit) {
             bail!("limit must be between 1 and 1000");
         }
+        let verify_person = person.is_some() && !query.is_empty();
         let ordering = if query.is_empty() {
             "recent"
         } else {
             "relevant"
         };
-        let scope=json!({"query":query,"person":person.as_ref().map(|p|p.id.as_str()),"ordering":ordering}).to_string();
+        let scope=json!({"query":query,"person":person.as_ref().map(|p|p.id.as_str()),"ordering":ordering,"verified_tags":verify_person}).to_string();
         let mut cursor = decode_cursor(token, &scope, self.session.account_index)?;
         let mut items = Vec::new();
         let mut pages = 0;
         let mut seen_pages = std::collections::HashSet::new();
         let mut seen_ids = std::collections::HashSet::new();
         let mut next = None;
+        let mut candidates_checked = 0;
+        let mut people_metadata_unavailable = 0;
+        let mut stop = false;
         loop {
             if !seen_pages.insert(cursor.server_token.clone()) {
                 bail!("Google repeated a search cursor; stopped rather than returning incomplete results as complete");
             }
-            let payload = if let Some(person) = &person {
-                protocol::person_search_payload(query, &person.id, cursor.server_token.as_deref())
+            let payload = if query.is_empty() {
+                protocol::person_search_payload(
+                    &person.as_ref().unwrap().id,
+                    cursor.server_token.as_deref(),
+                )
             } else {
                 protocol::keyword_search_payload(query, cursor.server_token.as_deref())
             };
@@ -297,9 +307,29 @@ impl PhotosClient {
             }
             for (index, item) in rows.iter().enumerate().skip(cursor.offset) {
                 if seen_ids.insert(item.id.clone()) {
-                    items.push(item.clone());
+                    candidates_checked += 1;
+                    let matches = if verify_person {
+                        let data = self.rpc("fDcn4b", json!([item.id, 1, null, null, 1]))?;
+                        match protocol::photo_has_person(
+                            &data,
+                            &item.id,
+                            &person.as_ref().unwrap().id,
+                        )? {
+                            Some(matches) => matches,
+                            None => {
+                                people_metadata_unavailable += 1;
+                                false
+                            }
+                        }
+                    } else {
+                        true
+                    };
+                    if matches {
+                        items.push(item.clone());
+                    }
                 }
-                if items.len() == limit {
+                if items.len() == limit || (verify_person && candidates_checked >= 100) {
+                    stop = true;
                     let resume = if index + 1 < rows.len() {
                         Some((cursor.server_token.clone(), index + 1))
                     } else {
@@ -316,7 +346,7 @@ impl PhotosClient {
                     break;
                 }
             }
-            if items.len() == limit {
+            if stop {
                 break;
             }
             let Some(server_token) = server_next else {
@@ -345,8 +375,18 @@ impl PhotosClient {
             complete: next.is_none(),
             next_page_token: next,
             pages_fetched: pages,
+            person_filter: person.as_ref().map(|_| {
+                if verify_person {
+                    "verified_photo_tags"
+                } else {
+                    "google_face_group"
+                }
+                .into()
+            }),
             person,
             ordering: ordering.into(),
+            candidates_checked,
+            people_metadata_unavailable,
         })
     }
     pub fn download(

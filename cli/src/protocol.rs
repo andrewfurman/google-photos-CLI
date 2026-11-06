@@ -282,21 +282,25 @@ pub fn people_index(data: &Value) -> Result<Vec<Person>> {
 pub fn keyword_search_payload(query: &str, token: Option<&str>) -> Value {
     json!([null, null, token, null, 100, null, 2, [query], null, [1, 1]])
 }
-pub fn person_search_payload(query: &str, id: &str, token: Option<&str>) -> Value {
+pub fn person_search_payload(id: &str, token: Option<&str>) -> Value {
     let face = json!([null, id]);
-    let filter = json!([
-        if query.is_empty() {
-            Value::Null
-        } else {
-            json!(query)
-        },
-        [[[[face]]]]
-    ]);
-    if query.is_empty() {
-        json!([null, null, token, null, 50, null, 1, filter])
-    } else {
-        json!([null, null, token, null, 100, null, 2, filter, null, [1, 1]])
+    let filter = json!([null, [[[[face]]]]]);
+    json!([null, null, token, null, 50, null, 1, filter])
+}
+/// None means Google did not supply face metadata; it is never treated as a match.
+pub fn photo_has_person(ext: &Value, photo_id: &str, person_id: &str) -> Result<Option<bool>> {
+    let item = field(ext, 0);
+    if item.is_null() {
+        return Ok(None);
     }
+    if field(item, 0).as_str() != Some(photo_id) {
+        bail!("Google returned metadata for an unexpected photo");
+    }
+    let tags = field(item, 18);
+    if !tags.is_array() {
+        return Ok(None);
+    }
+    Ok(Some(parse_people(tags)?.iter().any(|p| p.id == person_id)))
 }
 pub fn parse_inspection(ext: &Value, info: &Value, id: &str, account: u32) -> Result<Inspection> {
     let item = field(ext, 0);
@@ -496,6 +500,27 @@ mod inspection_tests {
         assert!(parse_inspection(&photo(Value::Null), &json!([]), "wrong-photo-id", 0).is_err());
     }
     #[test]
+    fn combined_search_matches_exact_tag_ids_and_never_infers_missing_people() {
+        let tagged = photo(json!([[
+            ["group-alice-123"],
+            ["thumbnail", null, null, null, null, "Alice"]
+        ]]));
+        assert_eq!(
+            photo_has_person(&tagged, "synthetic-photo-id", "group-alice-123").unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            photo_has_person(&tagged, "synthetic-photo-id", "another-group-id").unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            photo_has_person(&photo(Value::Null), "synthetic-photo-id", "group-alice-123").unwrap(),
+            None
+        );
+        assert!(photo_has_person(&tagged, "wrong-photo-id", "group-alice-123").is_err());
+    }
+
+    #[test]
     fn face_index_and_structured_filter_preserve_group_identity() {
         let index = json!([
             "opaque",
@@ -508,9 +533,10 @@ mod inspection_tests {
             ]]
         ]);
         assert_eq!(people_index(&index).unwrap()[0].id, "group-alice-123");
-        let payload = person_search_payload("beach", "group-alice-123", Some("next"));
+        let payload = person_search_payload("group-alice-123", Some("next"));
         assert!(payload[0].is_null());
-        assert_eq!(payload[7][0], "beach");
+        assert!(payload[7][0].is_null());
+        assert_eq!(payload[6], 1);
         assert_eq!(payload[2], "next");
         assert_eq!(payload[7][1][0][0][0][0][1], "group-alice-123");
         let keywords = keyword_search_payload("birthday cake", Some("next-page"));

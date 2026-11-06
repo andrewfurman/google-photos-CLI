@@ -59,7 +59,7 @@ enum Command {
     },
     /// Search by keyword or a tagged person's named face group
     #[command(
-        after_help = "EXAMPLES:\n  gphotos search \"birthday cake\"\n  gphotos search --person Emma\n  gphotos search --person Lucy --json\n  gphotos search beach --person Emma\n\n--person resolves a unique named Google Photos face group. Full names and\n--person-id disambiguate people with similar names; see 'gphotos people'.\nWith a keyword, Google receives both the query and the face-group filter.\nJSON includes person, next_page_token and complete. Continue with the same\nquery/person/account and --page-token TOKEN. --download saves displayed results."
+        after_help = "EXAMPLES:\n  gphotos search \"birthday cake\"\n  gphotos search --person Emma\n  gphotos search --person Lucy --json\n  gphotos search beach --person Emma\n\n--person resolves a unique named Google Photos face group. Full names and\n--person-id disambiguate people with similar names; see 'gphotos people'.\nWith a keyword, the CLI verifies that each keyword result has the selected\nface-group tag (up to 100 candidates per command; continue with --page-token).\nJSON includes person, next_page_token and complete. Continue with the same\nquery/person/account and --page-token TOKEN. --download saves displayed results."
     )]
     Search(SearchArgs),
     /// List Google's returned face groups and their IDs (named groups by default)
@@ -279,6 +279,11 @@ fn run(cli: Cli) -> Result<()> {
             if query.is_empty() && args.person.is_none() && args.person_id.is_none() {
                 bail!("Provide a search query or --person NAME. See 'gphotos help search'");
             }
+            if !query.is_empty() && (args.person.is_some() || args.person_id.is_some()) {
+                eprintln!(
+                    "Verifying the selected person on keyword results (up to 100 candidates)…"
+                );
+            }
             with_saved(|client| {
                 let result = if args.person.is_some() || args.person_id.is_some() {
                     client.search_person(
@@ -329,6 +334,12 @@ fn run(cli: Cli) -> Result<()> {
                             item.taken_at.as_deref().unwrap_or("date unknown"),
                             item.media_type,
                             item.filename.as_deref().unwrap_or("filename unavailable")
+                        );
+                    }
+                    if result.people_metadata_unavailable > 0 {
+                        eprintln!(
+                            "Skipped {} result(s) whose people metadata was unavailable.",
+                            result.people_metadata_unavailable
                         );
                     }
                     if let Some(token) = &result.next_page_token {

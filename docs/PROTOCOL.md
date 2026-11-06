@@ -9,7 +9,7 @@ The baseline framing and metadata positions are credited in the third-party noti
 | Keyword search | `EzkLib` | Query in payload `[7][0]`; result mode `[6]=2` selects the most-relevant set. The legacy three-field query form is not used. |
 | Named face groups | `yQelMe` | `[null,null,null,[[1,null,1]]]`; section type 1 under response `[1]` contains face groups. |
 | People-only search | `EzkLib` | Selected face-group ID in filter `[7][1][0][0][0][0][1]`; mode 1 matches the People & Pets navigation's recent results. |
-| Keyword plus person | `EzkLib` | Both the query and face-group ID are present in the same filter; keyword mode 2 selects relevance. |
+| Keyword plus person | `EzkLib` + `fDcn4b` | Fetch relevant keyword results and verify each result's per-photo face-group IDs locally. Google's mode 1 ignored the keyword in a combined filter, while mode 2 returned no matches for a known matching photo; neither is trusted for intersection. |
 | Extended photo info | `fDcn4b` | `[photo_id,1,null,null,1]`; the photo record is response `[0]`. |
 | Photo / download info | `VrseUb` | `[photo_id,null,null,null,null]`; direct full-size/original URLs are response `[1]` and `[7]` when present. |
 | Batched filenames | `EWgK9e` | Options require their own nested array; response `[0][1]` contains filename records. |

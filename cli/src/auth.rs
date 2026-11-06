@@ -1,4 +1,4 @@
-//! Portable session bundles; only explicit Chrome import touches macOS Keychain.
+//! Portable session bundles; only explicit Chrome import / legacy migration touches Keychain.
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use reqwest_cookie_store::CookieStore;
