@@ -1,6 +1,11 @@
 /target/
+/cli/target/
 .DS_Store
 .env
+*.env
+!sample.env
 cookies.txt
 *session*.json
+/cookies*.txt
+
 /downloads/

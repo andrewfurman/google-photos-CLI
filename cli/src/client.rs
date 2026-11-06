@@ -30,6 +30,11 @@ pub struct SearchResult {
     pub next_page_token: Option<String>,
     pub complete: bool,
     pub pages_fetched: usize,
+    pub person: Option<protocol::Person>,
+    pub ordering: String,
+    pub candidates_checked: usize,
+    pub people_metadata_unavailable: usize,
+    pub person_filter: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Cursor {
@@ -91,10 +96,10 @@ impl PhotosClient {
         let response = network(http.get(&url).send())?;
         let status = response.status();
         if !status.is_success() {
-            bail!("Google Photos login check returned HTTP {status}. Reimport with 'gphotos auth chrome'");
+            bail!("Google Photos login check returned HTTP {status}. Import fresh cookies or an exported session");
         }
         if response.url().host_str() != Some("photos.google.com") {
-            bail!("Google requires a browser sign-in. Open photos.google.com in Chrome, then run 'gphotos auth chrome'");
+            bail!("Google requires a browser sign-in. Open photos.google.com in Chrome, then import fresh cookies or an exported session");
         }
         if session.account_index > 0
             && !response
@@ -125,12 +130,7 @@ impl PhotosClient {
             .cookies
             .lock()
             .map_err(|_| anyhow!("Session storage is busy"))?;
-        Session::new(
-            &store,
-            self.session.account_index,
-            self.session.chrome_profile.clone(),
-        )?
-        .save()
+        self.session.save_store(&store)
     }
     pub fn rpc(&mut self, rpc: &str, payload: Value) -> Result<Value> {
         let wait = Duration::from_millis(350).saturating_sub(self.last_request.elapsed());
@@ -181,27 +181,119 @@ impl PhotosClient {
         }
         protocol::rpc_data(&network(response.text())?, rpc)
     }
+    pub fn people(&mut self) -> Result<Vec<protocol::Person>> {
+        let data = self.rpc("yQelMe", json!([null, null, null, [[1, null, 1]]]))?;
+        protocol::people_index(&data)
+    }
+    pub fn inspect(&mut self, id: &str) -> Result<protocol::Inspection> {
+        check_id(id)?;
+        let ext = self.rpc("fDcn4b", json!([id, 1, null, null, 1]))?;
+        let info = self.rpc("VrseUb", json!([id, null, null, null, null]))?;
+        protocol::parse_inspection(&ext, &info, id, self.session.account_index)
+    }
     pub fn search(
         &mut self,
         query: &str,
         limit: usize,
         token: Option<&str>,
     ) -> Result<SearchResult> {
+        self.search_filtered(query, limit, token, None)
+    }
+    pub fn search_person(
+        &mut self,
+        query: &str,
+        name: Option<&str>,
+        person_id: Option<&str>,
+        limit: usize,
+        token: Option<&str>,
+    ) -> Result<SearchResult> {
+        let people = self.people()?;
+        let person = if let Some(id) = person_id {
+            check_id(id)?;
+            people
+                .into_iter()
+                .find(|p| p.id == id)
+                .unwrap_or(protocol::Person {
+                    id: id.into(),
+                    name: None,
+                })
+        } else {
+            let name = name.unwrap_or("").trim();
+            if name.is_empty() {
+                bail!("--person must not be empty");
+            }
+            let mut matches = people
+                .into_iter()
+                .filter(|p| {
+                    p.name
+                        .as_deref()
+                        .is_some_and(|n| n.to_lowercase().contains(&name.to_lowercase()))
+                })
+                .collect::<Vec<_>>();
+            let exact = matches
+                .iter()
+                .filter(|p| {
+                    p.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if exact.len() == 1 {
+                exact[0].clone()
+            } else if matches.len() == 1 {
+                matches.remove(0)
+            } else if matches.is_empty() {
+                bail!("No named Google Photos face group matches {name:?}. Use 'gphotos people --name NAME' to check the groups Google returned");
+            } else {
+                bail!("More than one face group matches {name:?}. Use the full name or --person-id from 'gphotos people --name NAME'");
+            }
+        };
+        self.search_filtered(query, limit, token, Some(person))
+    }
+    fn search_filtered(
+        &mut self,
+        query: &str,
+        limit: usize,
+        token: Option<&str>,
+        person: Option<protocol::Person>,
+    ) -> Result<SearchResult> {
         let query = query.trim();
-        if query.is_empty() {
+        if query.is_empty() && person.is_none() {
             bail!("Provide a keyword query or --person NAME");
         }
-        let mut cursor = decode_cursor(token, query, self.session.account_index)?;
+        if !(1..=1000).contains(&limit) {
+            bail!("limit must be between 1 and 1000");
+        }
+        let verify_person = person.is_some() && !query.is_empty();
+        let ordering = if query.is_empty() {
+            "recent"
+        } else {
+            "relevant"
+        };
+        let scope=json!({"query":query,"person":person.as_ref().map(|p|p.id.as_str()),"ordering":ordering,"verified_tags":verify_person}).to_string();
+        let mut cursor = decode_cursor(token, &scope, self.session.account_index)?;
         let mut items = Vec::new();
         let mut pages = 0;
         let mut seen_pages = std::collections::HashSet::new();
         let mut seen_ids = std::collections::HashSet::new();
         let mut next = None;
+        let mut candidates_checked = 0;
+        let mut people_metadata_unavailable = 0;
+        let mut stop = false;
         loop {
             if !seen_pages.insert(cursor.server_token.clone()) {
                 bail!("Google repeated a search cursor; stopped rather than returning incomplete results as complete");
             }
-            let data = self.rpc("EzkLib", json!([query, null, cursor.server_token]))?;
+            let payload = if query.is_empty() {
+                protocol::person_search_payload(
+                    &person.as_ref().unwrap().id,
+                    cursor.server_token.as_deref(),
+                )
+            } else {
+                protocol::keyword_search_payload(query, cursor.server_token.as_deref())
+            };
+            let data = self.rpc("EzkLib", payload)?;
             let (mut rows, server_next) = protocol::parse_page(&data)?;
             for item in &mut rows {
                 item.url = format!(
@@ -215,9 +307,29 @@ impl PhotosClient {
             }
             for (index, item) in rows.iter().enumerate().skip(cursor.offset) {
                 if seen_ids.insert(item.id.clone()) {
-                    items.push(item.clone());
+                    candidates_checked += 1;
+                    let matches = if verify_person {
+                        let data = self.rpc("fDcn4b", json!([item.id, 1, null, null, 1]))?;
+                        match protocol::photo_has_person(
+                            &data,
+                            &item.id,
+                            &person.as_ref().unwrap().id,
+                        )? {
+                            Some(matches) => matches,
+                            None => {
+                                people_metadata_unavailable += 1;
+                                false
+                            }
+                        }
+                    } else {
+                        true
+                    };
+                    if matches {
+                        items.push(item.clone());
+                    }
                 }
-                if items.len() == limit {
+                if items.len() == limit || (verify_person && candidates_checked >= 100) {
+                    stop = true;
                     let resume = if index + 1 < rows.len() {
                         Some((cursor.server_token.clone(), index + 1))
                     } else {
@@ -225,7 +337,7 @@ impl PhotosClient {
                     };
                     if let Some((server_token, offset)) = resume {
                         next = Some(encode_cursor(&Cursor {
-                            query: query.into(),
+                            query: scope.clone(),
                             server_token,
                             offset,
                             account: self.session.account_index,
@@ -234,7 +346,7 @@ impl PhotosClient {
                     break;
                 }
             }
-            if items.len() == limit {
+            if stop {
                 break;
             }
             let Some(server_token) = server_next else {
@@ -242,7 +354,7 @@ impl PhotosClient {
             };
             if pages >= 50 {
                 next = Some(encode_cursor(&Cursor {
-                    query: query.into(),
+                    query: scope.clone(),
                     server_token: Some(server_token),
                     offset: 0,
                     account: self.session.account_index,
@@ -263,6 +375,18 @@ impl PhotosClient {
             complete: next.is_none(),
             next_page_token: next,
             pages_fetched: pages,
+            person_filter: person.as_ref().map(|_| {
+                if verify_person {
+                    "verified_photo_tags"
+                } else {
+                    "google_face_group"
+                }
+                .into()
+            }),
+            person,
+            ordering: ordering.into(),
+            candidates_checked,
+            people_metadata_unavailable,
         })
     }
     pub fn download(

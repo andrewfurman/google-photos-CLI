@@ -1,12 +1,12 @@
 [package]
 name = "google-photos-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
-description = "Unofficial Google Photos CLI with local Chrome session import"
+description = "Unofficial cross-platform Google Photos CLI with portable browser sessions"
 repository = "https://github.com/andrewfurman/google-photos-CLI"
-readme = "README.md"
+readme = "../README.md"
 
 [[bin]]
 name = "gphotos"
@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "cookies", "rustls-tls"] }
 reqwest_cookie_store = "0.9"
 cookie_store = { version = "0.22", features = ["serde_json"] }
@@ -27,6 +27,7 @@ tempfile = "3"
 url = "2"
 sha2 = "0.10"
 base64 = "0.22"
+dotenvy = "0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
