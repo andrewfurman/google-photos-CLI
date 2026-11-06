@@ -295,17 +295,30 @@ change it without notice. Automated access may be restricted under
 - **HTTP 429:** wait before retrying; numeric Retry-After guidance is reported when present. RPCs are spaced at least 350 ms after the prior response. Rate limits/downloads are not automatically retried.
 - **Destination exists:** choose another output filename; existing data is preserved.
 
-## Repository and contribution workflow
+## Repository, contributor, and agent instructions
 
-The root contains the README, MIT license, placeholder setup file, and repository
-instructions. Rust source, `Cargo.toml`, and `Cargo.lock` live under **`cli/`**;
-supporting documents live under **`docs/`**. Cargo does not require those files
-at the repository root.
+Keep Rust source, `Cargo.toml`, and `Cargo.lock` under **`cli/`**, supporting
+documentation under **`docs/`**, and setup and repository instructions in this
+README. Cargo does not require its files at the repository root.
 
-Changes after the initial bootstrap go through **branch → pull request → merge**.
-Maintainers may merge their own PRs immediately after relevant validation passes.
-See [Contributing](docs/CONTRIBUTING.md) for commands and checks. CI defines offline
-build/test jobs for Linux, Windows, and macOS, using synthetic data only.
+Changes after the initial bootstrap go through **branch → pull request → merge**;
+do not push changes directly to `main`. Maintainers may merge their own PRs
+immediately after relevant validation passes, with no mandatory waiting period.
+
+Before merging, run these checks from the repository root:
+
+```bash
+cargo fmt --manifest-path cli/Cargo.toml --check
+cargo clippy --manifest-path cli/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path cli/Cargo.toml --locked
+```
+
+CI defines offline build/test jobs for Linux, Windows, and macOS.
+See [Contributing](docs/CONTRIBUTING.md) for additional guidance.
+
+- Use synthetic test data. Never commit session values, cookie files, account captures, real locations, face-group data, or downloaded media.
+- Keep `sample.env` to one placeholder session value and keep populated `.env` files ignored.
+- Do not infer tagged people from filenames, ownership, descriptions, or search keywords. Use Google's face-group IDs and per-photo face-group metadata.
 
 License: [MIT](LICENSE). Upstream attribution is preserved in
 [Third-party notices](docs/THIRD_PARTY_NOTICES.md).
