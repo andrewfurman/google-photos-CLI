@@ -49,6 +49,19 @@ pub fn globals(html: &str) -> Result<Value> {
     }
     Ok(value)
 }
+fn rpc_rejection(frame: &[Value]) -> anyhow::Error {
+    let status = frame
+        .get(5)
+        .and_then(|value| value.get(0))
+        .and_then(Value::as_i64);
+    match status {
+        Some(8) => anyhow!("Google Photos is limiting requests (RPC code 8: RESOURCE_EXHAUSTED). Wait before retrying. Google did not provide a reset time"),
+        Some(16) => anyhow!("Google Photos authentication expired or is invalid. Sign in with Chrome and reimport your session"),
+        Some(code) => anyhow!("Google Photos rejected the request (RPC code {code})"),
+        None => anyhow!("Google Photos rejected the request without a status code"),
+    }
+}
+
 pub fn rpc_data(body: &str, rpc: &str) -> Result<Value> {
     fn find(value: &Value, rpc: &str) -> Option<Result<Value>> {
         let array = value.as_array()?;
@@ -56,8 +69,10 @@ pub fn rpc_data(body: &str, rpc: &str) -> Result<Value> {
             && array.get(1).and_then(Value::as_str) == Some(rpc)
         {
             return Some(match array.get(2).and_then(Value::as_str) {
-                Some(text) => serde_json::from_str(text).context("Google Photos returned malformed RPC data"),
-                None => Err(anyhow!("Google Photos rejected the request or the session expired; import fresh browser cookies or an exported session")),
+                Some(text) => {
+                    serde_json::from_str(text).context("Google Photos returned malformed RPC data")
+                }
+                None => Err(rpc_rejection(array)),
             });
         }
         array.iter().find_map(|v| find(v, rpc))
@@ -180,7 +195,20 @@ mod tests {
             .to_string()
             .contains("signed-in"));
         let err = rpc_data(r#"[["wrb.fr","EzkLib",null]]"#, "EzkLib").unwrap_err();
-        assert!(err.to_string().contains("session expired"));
+        assert!(err.to_string().contains("without a status code"));
+        let limited = rpc_data(
+            r#"[["wrb.fr","EzkLib",null,null,null,[8,"private details"]]]"#,
+            "EzkLib",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(limited.contains("limiting requests") && limited.contains("RESOURCE_EXHAUSTED"));
+        assert!(!limited.contains("private details"));
+        let unauthenticated =
+            rpc_data(r#"[["wrb.fr","EzkLib",null,null,null,[16]]]"#, "EzkLib").unwrap_err();
+        assert!(unauthenticated
+            .to_string()
+            .contains("reimport your session"));
         assert!(parse_page(&json!({"bad":true})).is_err());
         assert!(parse_page(&json!([null])).unwrap().0.is_empty());
     }
@@ -340,9 +368,10 @@ pub fn rpc_batch_data(body: &str, rpc: &str, count: usize) -> Result<Vec<Value>>
                 .get(6)
                 .and_then(Value::as_str)
                 .context("Batched RPC has no request ID")?;
-            let text = a.get(2).and_then(Value::as_str).context(
-                "Google rejected a batched metadata request; refresh the session if necessary",
-            )?;
+            let text = a
+                .get(2)
+                .and_then(Value::as_str)
+                .ok_or_else(|| rpc_rejection(a))?;
             if out
                 .insert(
                     id.into(),

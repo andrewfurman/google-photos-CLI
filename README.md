@@ -222,6 +222,9 @@ candidates when local verification is needed. With `--all`, the default caps are
 `--limit` accepts 1–10000; `--max-seconds` accepts 1–86400. Time is checked between
 requests, so a slow in-flight request can overrun the budget.
 
+See [Google Photos rate limits and timeouts](docs/RATE_LIMITS.md) for observed
+server responses, CLI limits, and how to retry or resume.
+
 Text searches default to `--sort relevant`. Use `--sort recent` for Google's
 recent matching set. These are separate result sets, like the sections in Chrome.
 `--all` raises scan limits with either sort. To reproduce the old text-search
