@@ -222,9 +222,11 @@ candidates when local verification is needed. With `--all`, the default caps are
 `--limit` accepts 1–10000; `--max-seconds` accepts 1–86400. Time is checked between
 requests, so a slow in-flight request can overrun the budget.
 
-Ordinary keyword searches use Google's most-relevant set. `--all` uses Google's
-recent matching set for longer chronological pagination; those result sets can
-differ. People-only and date-only searches use recent capture-date ordering.
+Text searches default to `--sort relevant`. Use `--sort recent` for Google's
+recent matching set. These are separate result sets, like the sections in Chrome.
+`--all` raises scan limits with either sort. To reproduce the old text-search
+behavior of `--all`, use `--sort recent --all`. People-only and date-only
+searches use recent capture-date ordering.
 
 JSON includes `items`, `people`, `person_match: "all"`, `ordering`, `date_range`,
 `candidates_checked`, missing-metadata counts, `complete`, `stop_reason`,
@@ -233,7 +235,9 @@ preserved when one person is selected. A stopped search returns its collected
 matches; `complete: false` and a cursor indicate more may be available. Reasons
 include `result_limit`, `candidate_limit`, `time_limit`, and `page_limit`.
 
-Continue with the same query, people, dates, account, and `--all` setting. Tokens
+The CLI prints the stop reason and resume flags to stderr. Continue with the same
+query, people, dates, account, and sort. You can change `--all` or the limits when
+resuming. For a cursor from an older text search with `--all`, use `--sort recent`. Tokens
 preserve offsets within a page and cannot be reused for different filters.
 Duplicate results are removed within each run. Google's changing library/search
 results can affect pagination between commands; this is not a snapshot or a

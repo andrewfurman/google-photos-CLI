@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use google_photos_cli::{
     auth::{self, Session},
-    client::{self, PhotosClient, SearchOptions},
+    client::{self, PhotosClient, SearchOptions, SearchSort},
 };
 use std::path::PathBuf;
 
@@ -47,7 +47,7 @@ other machines. Use --session-file PATH to select a different private file.
 Text queries, locations, content/tag phrases and free-form dates go to Google's
 search. Explicit --from/--to bounds are verified against capture-date metadata.
 Repeated --person filters require ALL selected face-group IDs in the same photo.
---all follows pages until completion, a result/page limit, or the soft time budget.
+--sort selects relevant or recent results. --all raises paging and scan limits.
 Partial results have complete=false, stop_reason, and next_page_token.
 
 Unofficial project; not affiliated with Google. Read commands never modify
@@ -96,16 +96,19 @@ returned timezone. Photos with unknown capture dates are excluded. Date-only
 searches use Google's chronological library, positioned at --to.
 
 PAGINATION AND OUTPUT:
-  gphotos search "birthday cake" --limit 100 --json
+  gphotos search "birthday cake" --sort recent --all --limit 100 --json
   gphotos search "birthday cake" --limit 100 --json --page-token TOKEN
 
 Default: 20 matches, up to 100 candidates when local verification is needed.
 --all follows pages automatically: default cap 10000 matches, 1000 pages, 120s
-soft budget. --limit and --max-seconds override caps. Ordinary keyword results
-use Google's most-relevant set; --all uses its recent matching set for bulk paging.
-These Google result sets can differ. JSON includes ordering, people, person_match,
-candidates_checked, complete, stop_reason, and next_page_token. If incomplete,
-repeat the identical filters and --all setting with --page-token TOKEN.
+soft budget. --limit and --max-seconds override caps. --sort relevant (default
+for text) and --sort recent select separate Google result sets. People-only and
+date-only searches use recent order. --all works with either sort.
+
+An incomplete search reports why it stopped and how to resume. Keep the same
+query, filters, account, and sort when using --page-token. You can change scan
+limits, including --all. JSON includes ordering, people, person_match,
+candidates_checked, complete, stop_reason, and next_page_token.
 --download DIRECTORY downloads displayed matches without changing the library."#)]
     Search(SearchArgs),
     /// List Google's returned face groups and their IDs (named groups by default)
@@ -204,6 +207,9 @@ struct SearchArgs {
     /// Inclusive capture-date upper bound, YYYY-MM-DD
     #[arg(long, help_heading = "Advanced filters")]
     to: Option<String>,
+    /// Select the Google result set (default: relevant for text, recent otherwise)
+    #[arg(long, value_enum)]
+    sort: Option<SearchSort>,
     /// Follow Google result pages automatically (default cap: 10000 matches)
     #[arg(long)]
     all: bool,
@@ -368,11 +374,32 @@ fn run(cli: Cli) -> Result<()> {
                     SearchOptions {
                         limit: args.limit.unwrap_or(if args.all { 10000 } else { 20 }) as usize,
                         all: args.all,
+                        sort: args.sort,
                         max_seconds: args.max_seconds,
                         dates,
                     },
                     args.page_token.as_deref(),
                 )?;
+                if let Some(token) = &result.next_page_token {
+                    let reason = match result.stop_reason.as_str() {
+                        "result_limit" => "reached the result limit",
+                        "candidate_limit" => "reached the candidate scan limit",
+                        "time_limit" => "reached the time budget",
+                        "page_limit" => "reached the page limit",
+                        other => other,
+                    };
+                    eprintln!(
+                        "Search incomplete: {reason} after checking {} candidate(s).",
+                        result.candidates_checked
+                    );
+                    eprintln!(
+                        "Resume with the same query and filters. Keep sort order ({}), and set --page-token {token}.",
+                        result.ordering
+                    );
+                    if result.stop_reason == "candidate_limit" {
+                        eprintln!("Add --all to scan beyond the default candidate limit.");
+                    }
+                }
                 let mut downloads = Vec::new();
                 let mut failures = Vec::new();
                 if let Some(dir) = &args.download {
@@ -408,7 +435,7 @@ fn run(cli: Cli) -> Result<()> {
                                 .join(" AND ")
                         );
                     }
-                    println!("Search status: {}", result.stop_reason);
+                    println!("Order: {}", result.ordering);
                     for item in &result.items {
                         println!(
                             "{}  {}  {}  {}",
@@ -429,9 +456,6 @@ fn run(cli: Cli) -> Result<()> {
                             "Skipped {} result(s) with unavailable capture dates.",
                             result.date_metadata_unavailable
                         );
-                    }
-                    if let Some(token) = &result.next_page_token {
-                        eprintln!("More results available. Continue the same search with --page-token '{token}'");
                     }
                     for saved in &downloads {
                         println!(

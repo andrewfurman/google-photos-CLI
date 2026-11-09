@@ -67,6 +67,8 @@ fn detailed_help_documents_filters_pagination_metadata_and_session_refresh() {
                 "ADVANCED SEARCH OPTIONS:",
                 "gphotos search \"birthday cake\"",
                 "--page-token",
+                "--sort",
+                "An incomplete search reports why it stopped and how to resume",
                 "--all",
                 "YYYY-MM-DD",
                 "--location",
