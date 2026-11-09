@@ -218,9 +218,9 @@ gphotos search --location Philly --all --limit 1000 --max-seconds 300 --json --p
 
 Without `--all`, the default is 20 matches, at most 50 pages, and up to 100
 candidates when local verification is needed. With `--all`, the default caps are
-10,000 matches, 1,000 Google pages, and a 120-second **soft** time budget.
-`--limit` accepts 1–10000; `--max-seconds` accepts 1–86400. Time is checked between
-requests, so a slow in-flight request can overrun the budget.
+10,000 matches, 1,000 Google pages, and a 120-second search time budget.
+`--limit` accepts 1–10000; `--max-seconds` accepts 1–86400. Search requests and retry waits share this budget. If it runs out,
+the CLI returns collected matches and a continuation token for remaining pages.
 
 See [Google Photos rate limits and timeouts](docs/RATE_LIMITS.md) for observed
 server responses, CLI limits, and how to retry or resume.
@@ -364,7 +364,7 @@ change it without notice. Automated access may be restricted under
 - **Chrome import fails:** check profile, macOS file permissions, and Chrome Safe Storage permission. Linux/Windows users should import a cookie file or exported session instead.
 - **Person not found:** check `gphotos people --name NAME` and Google's face grouping. Only groups returned by Google can be resolved by name; use a known `--person-id` if necessary.
 - **Metadata missing:** inspect reports null/unknown instead of inferring values.
-- **HTTP 429:** wait before retrying; numeric Retry-After guidance is reported when present. RPCs are spaced at least 350 ms after the prior response. Rate limits/downloads are not automatically retried.
+- **Search rate limits:** the CLI retries HTTP 429 and RPC code 8 within the search time budget. It uses Google’s `Retry-After` when available and exponential backoff otherwise.
 - **Destination exists:** choose another output filename; existing data is preserved.
 
 ## Repository, contributor, and agent instructions

@@ -101,7 +101,7 @@ PAGINATION AND OUTPUT:
 
 Default: 20 matches, up to 100 candidates when local verification is needed.
 --all follows pages automatically: default cap 10000 matches, 1000 pages, 120s
-soft budget. --limit and --max-seconds override caps. --sort relevant (default
+search budget. --limit and --max-seconds override caps. --sort relevant (default
 for text) and --sort recent select separate Google result sets. People-only and
 date-only searches use recent order. --all works with either sort.
 
@@ -213,7 +213,7 @@ struct SearchArgs {
     /// Follow Google result pages automatically (default cap: 10000 matches)
     #[arg(long)]
     all: bool,
-    /// Soft time budget checked between requests; partial results include a cursor
+    /// Search time budget including retries; partial results include a cursor
     #[arg(long,default_value_t=120,value_parser=clap::value_parser!(u64).range(1..=86400))]
     max_seconds: u64,
     /// Maximum matches (default 20, or 10000 with --all)

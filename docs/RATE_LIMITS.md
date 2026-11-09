@@ -12,10 +12,18 @@ search quota, how it is scoped, or when it resets.
 - Importing the Chrome session again did not restore keyword search. Both modes
   were still limited after a 45-second cooldown. The cooldown was a test
   interval. Google supplied no reset time.
-- If a request fails with code 8, wait before retrying. For HTTP 429, follow
-  the `Retry-After` delay if the CLI reports one. If you already have a page
-  token, rerun with the same query, filters, account, and sort, plus
-  `--page-token TOKEN`. A failure before the first page yields no token.
+## How searches retry
+
+Searches retry RPC code 8 and HTTP 429. They honor `Retry-After` in seconds or as
+an HTTP date. Without a usable header, waits start at 1 second, double after each
+rejection, and cap at 30 seconds. If a wait would consume the remaining search
+budget, the CLI stops and returns collected matches and a page token, even when
+the first page was limited. If resolving a person's name takes the full budget,
+retry with the same filters and reuse any token supplied to that command.
+
+Resume with the same query, filters, account, and sort, plus `--page-token TOKEN`.
+Searches may omit filenames when their time budget expires. Authentication setup
+and media downloads have separate timeouts.
 
 ## CLI limits
 
@@ -28,10 +36,9 @@ search quota, how it is scoped, or when it resets.
 | Normal search | Up to 50 pages, 20 results by default, and 100 candidates when local filtering is needed |
 | Search with `--all` | Up to 1,000 pages and 10,000 results by default, subject to the time budget |
 
-The search time budget is checked between requests and an in-flight request can
-run past it. When the CLI stops at a search budget, it reports an incomplete
-result and a continuation token if more results may be available. These budgets
-are local limits. Google can limit requests independently.
+The search budget covers search requests and retry delays. The CLI can stop early
+when Google asks it to wait longer than the remaining budget. Google applies its
+own limits independently.
 
 Google publishes separate [Picker and Library API quotas](https://developers.google.com/photos/overview/api-limits-quotas)
 for OAuth projects. Those quotas apply to the public developer APIs. This CLI

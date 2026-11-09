@@ -1,6 +1,6 @@
 use crate::{
     auth::Session,
-    protocol::{self, Photo},
+    protocol::{self, Photo, RateLimit},
 };
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -48,6 +48,8 @@ pub struct PhotosClient {
     session: Session,
     globals: Value,
     last_request: Instant,
+    #[cfg(test)]
+    rpc_endpoint: Option<String>,
 }
 #[derive(Serialize)]
 pub struct SearchResult {
@@ -83,8 +85,22 @@ pub struct DownloadResult {
     pub sha256: String,
 }
 
+#[derive(Debug)]
+struct RequestTimedOut;
+
+impl std::fmt::Display for RequestTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Google Photos request timed out")
+    }
+}
+
+impl std::error::Error for RequestTimedOut {}
+
 fn network<T>(result: reqwest::Result<T>) -> Result<T> {
     result.map_err(|e| {
+        if e.is_timeout() {
+            return RequestTimedOut.into();
+        }
         anyhow!(
             "Google Photos network request failed{}",
             e.status()
@@ -93,6 +109,50 @@ fn network<T>(result: reqwest::Result<T>) -> Result<T> {
         )
     })
 }
+fn retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        // An unrepresentably large delay must never become a short fallback retry.
+        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
+    }
+    let date = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    Some(date.signed_duration_since(now).to_std().unwrap_or_default())
+}
+
+fn retry_search<T>(
+    deadline: Instant,
+    mut request: impl FnMut(Duration) -> Result<T>,
+) -> Result<Option<T>> {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        match request(remaining) {
+            Ok(value) => return Ok(Some(value)),
+            Err(error) if error.is::<RequestTimedOut>() => return Ok(None),
+            Err(error) => {
+                let Some(limit) = error.downcast_ref::<RateLimit>() else {
+                    return Err(error);
+                };
+                let delay = limit.retry_after.unwrap_or(backoff);
+                if delay >= deadline.saturating_duration_since(Instant::now()) {
+                    eprintln!("{limit} The retry would exceed the search time budget.");
+                    return Ok(None);
+                }
+                eprintln!(
+                    "Google Photos is limiting requests ({}). Retrying in {:.1} seconds…",
+                    limit.source,
+                    delay.as_secs_f64()
+                );
+                std::thread::sleep(delay);
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
+}
+
 fn allowed_host(url: &url::Url) -> bool {
     url.scheme() == "https"
         && url.username().is_empty()
@@ -147,6 +207,8 @@ impl PhotosClient {
             session,
             globals,
             last_request: Instant::now(),
+            #[cfg(test)]
+            rpc_endpoint: None,
         };
         Ok(client)
     }
@@ -164,10 +226,21 @@ impl PhotosClient {
         self.session.save_store(&store)
     }
     pub fn rpc(&mut self, rpc: &str, payload: Value) -> Result<Value> {
+        self.rpc_with_timeout(rpc, &payload, Duration::from_secs(120))
+    }
+    fn rpc_with_timeout(&mut self, rpc: &str, payload: &Value, timeout: Duration) -> Result<Value> {
         let framing = json!([[[rpc, payload.to_string(), null, "cli"]]]).to_string();
-        protocol::rpc_data(&self.rpc_body(rpc, framing)?, rpc)
+        self.rpc_call(rpc, framing, timeout, |body| protocol::rpc_data(body, rpc))
     }
     pub fn rpc_batch(&mut self, rpc: &str, payloads: &[Value]) -> Result<Vec<Value>> {
+        self.rpc_batch_with_timeout(rpc, payloads, Duration::from_secs(120))
+    }
+    fn rpc_batch_with_timeout(
+        &mut self,
+        rpc: &str,
+        payloads: &[Value],
+        timeout: Duration,
+    ) -> Result<Vec<Value>> {
         if payloads.is_empty() {
             return Ok(Vec::new());
         }
@@ -179,11 +252,22 @@ impl PhotosClient {
             .enumerate()
             .map(|(i, p)| json!([rpc, p.to_string(), null, format!("p{i}")]))
             .collect::<Vec<_>>();
-        let body = self.rpc_body(rpc, json!([requests]).to_string())?;
-        protocol::rpc_batch_data(&body, rpc, payloads.len())
+        self.rpc_call(rpc, json!([requests]).to_string(), timeout, |body| {
+            protocol::rpc_batch_data(body, rpc, payloads.len())
+        })
     }
-    fn rpc_body(&mut self, rpc: &str, framing: String) -> Result<String> {
+    fn rpc_call<T>(
+        &mut self,
+        rpc: &str,
+        framing: String,
+        timeout: Duration,
+        decode: impl FnOnce(&str) -> Result<T>,
+    ) -> Result<T> {
+        let started = Instant::now();
         let wait = Duration::from_millis(350).saturating_sub(self.last_request.elapsed());
+        if wait >= timeout {
+            return Err(RequestTimedOut.into());
+        }
         std::thread::sleep(wait);
         let path = self.globals["Im6cmf"]
             .as_str()
@@ -192,10 +276,17 @@ impl PhotosClient {
             bail!("Unexpected Google Photos application path");
         }
         let endpoint = format!("https://photos.google.com{path}/data/batchexecute");
+        #[cfg(test)]
+        let endpoint = self.rpc_endpoint.clone().unwrap_or(endpoint);
         let source = format!("/u/{}/", self.session.account_index);
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(RequestTimedOut.into());
+        }
         let response = network(
             self.http
                 .post(endpoint)
+                .timeout(remaining.min(Duration::from_secs(120)))
                 .query(&[
                     ("rpcids", rpc),
                     ("source-path", &source),
@@ -212,23 +303,28 @@ impl PhotosClient {
         self.last_request = Instant::now();
         let response = response?;
         let status = response.status();
+        let delay = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|value| retry_after(value, chrono::Utc::now()));
         if status.as_u16() == 429 {
-            let delay = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .filter(|s| s.bytes().all(|c| c.is_ascii_digit()));
-            bail!(
-                "Google Photos rate limited this session (HTTP 429). {}",
-                delay
-                    .map(|d| format!("Retry after {d} seconds."))
-                    .unwrap_or_else(|| "Wait before retrying.".into())
-            );
+            return Err(RateLimit {
+                source: "HTTP 429",
+                retry_after: delay,
+            }
+            .into());
         }
         if !status.is_success() {
             bail!("Google Photos RPC returned HTTP {status}; sign in with Chrome and reimport if authentication expired");
         }
-        network(response.text())
+        let mut result = decode(&network(response.text())?);
+        if let Err(error) = &mut result {
+            if let Some(limit) = error.downcast_mut::<RateLimit>() {
+                limit.retry_after = delay;
+            }
+        }
+        result
     }
     pub fn people(&mut self) -> Result<Vec<protocol::Person>> {
         let data = self.rpc("yQelMe", json!([null, null, null, [[1, null, 1]]]))?;
@@ -284,13 +380,26 @@ impl PhotosClient {
         options: SearchOptions,
         token: Option<&str>,
     ) -> Result<SearchResult> {
+        let query = query.trim();
+        if query.is_empty() && names.is_empty() && ids.is_empty() && !options.dates.active() {
+            bail!("Provide a search query, --person NAME, or --from/--to dates");
+        }
+        if !(1..=10000).contains(&options.limit) || !(1..=86400).contains(&options.max_seconds) {
+            bail!("limit must be 1–10000 and max-seconds must be 1–86400");
+        }
+        let deadline = Instant::now() + Duration::from_secs(options.max_seconds);
         let index = if names.is_empty() && ids.is_empty() {
             Vec::new()
         } else {
-            self.people()?
+            let payload = json!([null, null, null, [[1, null, 1]]]);
+            let data = retry_search(deadline, |remaining| {
+                self.rpc_with_timeout("yQelMe", &payload, remaining)
+            })?
+            .context("Search time limit reached while resolving people. Retry with the same filters and page token, if supplied")?;
+            protocol::people_index(&data)?
         };
         let people = resolve_people(&index, names, ids)?;
-        self.search_filtered(query, people, options, token)
+        self.search_filtered(query, people, options, token, deadline)
     }
     fn search_filtered(
         &mut self,
@@ -298,16 +407,8 @@ impl PhotosClient {
         people: Vec<protocol::Person>,
         options: SearchOptions,
         token: Option<&str>,
+        deadline: Instant,
     ) -> Result<SearchResult> {
-        let query = query.trim();
-        if query.is_empty() && people.is_empty() && !options.dates.active() {
-            bail!("Provide a search query, --person NAME, or --from/--to dates");
-        }
-        if !(1..=10000).contains(&options.limit) || options.max_seconds == 0 {
-            bail!("limit must be 1–10000 and max-seconds must be positive");
-        }
-        let started = Instant::now();
-        let deadline = Duration::from_secs(options.max_seconds);
         let timeline = query.is_empty() && options.dates.active();
         let verify_people =
             !people.is_empty() && (!query.is_empty() || people.len() > 1 || timeline);
@@ -344,16 +445,6 @@ impl PhotosClient {
             usize::MAX
         };
         loop {
-            if pages > 0 && started.elapsed() >= deadline {
-                next = Some(encode_cursor(&Cursor {
-                    query: scope.clone(),
-                    server_token: cursor.server_token.clone(),
-                    offset: cursor.offset,
-                    account: self.session.account_index,
-                })?);
-                stop_reason = "time_limit".into();
-                break;
-            }
             if !seen_pages.insert(cursor.server_token.clone()) {
                 bail!("Google repeated a search cursor; stopped rather than claiming complete results");
             }
@@ -384,7 +475,14 @@ impl PhotosClient {
                     ),
                 )
             };
-            let data = self.rpc(rpc, payload)?;
+            let Some(data) = retry_search(deadline, |remaining| {
+                self.rpc_with_timeout(rpc, &payload, remaining)
+            })?
+            else {
+                next = Some(encode_cursor(&cursor)?);
+                stop_reason = "time_limit".into();
+                break;
+            };
             let (mut rows, server_next) = protocol::parse_page(&data)?;
             for item in &mut rows {
                 item.url = format!(
@@ -398,7 +496,7 @@ impl PhotosClient {
             }
             let mut metadata = std::collections::HashMap::<String, Option<bool>>::new();
             for (index, item) in rows.iter().enumerate().skip(cursor.offset) {
-                if started.elapsed() >= deadline {
+                if Instant::now() >= deadline {
                     next = Some(encode_cursor(&Cursor {
                         query: scope.clone(),
                         server_token: cursor.server_token.clone(),
@@ -410,7 +508,6 @@ impl PhotosClient {
                     break;
                 }
                 if seen_ids.insert(item.id.clone()) {
-                    candidates_checked += 1;
                     let date_matches = match options.dates.matches(item.taken_at.as_deref()) {
                         Some(value) => value,
                         None => {
@@ -433,7 +530,16 @@ impl PhotosClient {
                                 .iter()
                                 .map(|p| json!([p.id, 1, null, null, 1]))
                                 .collect::<Vec<_>>();
-                            let values = self.rpc_batch("fDcn4b", &payloads)?;
+                            let Some(values) = retry_search(deadline, |remaining| {
+                                self.rpc_batch_with_timeout("fDcn4b", &payloads, remaining)
+                            })?
+                            else {
+                                cursor.offset = index;
+                                next = Some(encode_cursor(&cursor)?);
+                                stop_reason = "time_limit".into();
+                                stop = true;
+                                break;
+                            };
                             for (photo, value) in candidates.iter().zip(values) {
                                 metadata.insert(
                                     photo.id.clone(),
@@ -451,6 +557,7 @@ impl PhotosClient {
                     } else {
                         true
                     };
+                    candidates_checked += 1;
                     if date_matches && people_match {
                         items.push(item.clone());
                     }
@@ -512,11 +619,20 @@ impl PhotosClient {
             cursor.server_token = Some(server_token);
             cursor.offset = 0;
         }
-        // Avoid oversized filename payloads for long result lists.
-        for chunk in items.chunks_mut(500) {
-            let ids = chunk.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-            let data = self.rpc("EWgK9e", protocol::batch_payload(&ids))?;
-            protocol::filenames(&data, chunk);
+        // A stopped search must not issue another RPC before the retry delay.
+        if stop_reason != "time_limit" {
+            for chunk in items.chunks_mut(500) {
+                let ids = chunk.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+                let payload = protocol::batch_payload(&ids);
+                let Some(data) = retry_search(deadline, |remaining| {
+                    self.rpc_with_timeout("EWgK9e", &payload, remaining)
+                })?
+                else {
+                    eprintln!("Search time budget reached before all filenames could be fetched.");
+                    break;
+                };
+                protocol::filenames(&data, chunk);
+            }
         }
         Ok(SearchResult {
             query: query.into(),
@@ -753,6 +869,125 @@ fn copy_media(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retry_after_accepts_seconds_and_http_dates() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-09T20:00:00Z")
+            .unwrap()
+            .to_utc();
+        assert_eq!(retry_after("12", now), Some(Duration::from_secs(12)));
+        assert_eq!(
+            retry_after("Mon, 09 Nov 2026 20:00:07 GMT", now),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(
+            retry_after("Mon, 09 Nov 2026 19:59:00 GMT", now),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(retry_after("invalid", now), None);
+    }
+
+    #[test]
+    fn limited_search_retries_and_preserves_a_resumable_partial_page() {
+        use std::{
+            io::{BufRead, BufReader},
+            net::TcpListener,
+        };
+
+        fn rpc_frame(rpc: &str, payload: Value) -> String {
+            json!([["wrb.fr", rpc, payload.to_string()]]).to_string()
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let responses = [
+                (
+                    "EzkLib",
+                    "200 OK",
+                    "",
+                    r#"[["wrb.fr","EzkLib",null,null,null,[8]]]"#.into(),
+                ),
+                (
+                    "EzkLib",
+                    "200 OK",
+                    "",
+                    rpc_frame("EzkLib", json!([[["first"]], "next"])),
+                ),
+                (
+                    "EzkLib",
+                    "429 Too Many Requests",
+                    "Retry-After: 120\r\n",
+                    String::new(),
+                ),
+                (
+                    "EzkLib",
+                    "200 OK",
+                    "",
+                    rpc_frame("EzkLib", json!([[["second"]]])),
+                ),
+                ("EWgK9e", "200 OK", "", rpc_frame("EWgK9e", json!([]))),
+            ];
+            for (index, (rpc, status, headers, body)) in responses.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.contains(&format!("rpcids={rpc}")));
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut request_body = vec![0; length];
+                reader.read_exact(&mut request_body).unwrap();
+                if matches!(index, 2 | 3) {
+                    let (_, framing) = url::form_urlencoded::parse(&request_body)
+                        .find(|(key, _)| key == "f.req")
+                        .unwrap();
+                    let frame: Value = serde_json::from_str(&framing).unwrap();
+                    let payload: Value =
+                        serde_json::from_str(frame[0][0][1].as_str().unwrap()).unwrap();
+                    assert_eq!(payload[2], "next");
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let mut client = PhotosClient {
+            http: Client::builder().no_proxy().build().unwrap(),
+            cookies: Arc::new(CookieStoreMutex::default()),
+            session: Session::new(&cookie_store::CookieStore::default(), 0, None).unwrap(),
+            globals: json!({"Im6cmf":"/_","FdrFJe":"","cfb2h":"","SNlM0e":""}),
+            last_request: Instant::now(),
+            rpc_endpoint: Some(endpoint),
+        };
+        let partial = client.search("beach", 20, None).unwrap();
+        assert_eq!(partial.stop_reason, "time_limit");
+        assert!(!partial.complete);
+        assert_eq!(partial.items.len(), 1);
+        assert_eq!(partial.items[0].id, "first");
+        let resumed = client
+            .search("beach", 20, partial.next_page_token.as_deref())
+            .unwrap();
+        assert!(resumed.complete);
+        assert_eq!(resumed.items.len(), 1);
+        assert_eq!(resumed.items[0].id, "second");
+        server.join().unwrap();
+    }
+
     #[test]
     fn cursor_is_bound_to_query_and_account() {
         let token = encode_cursor(&Cursor {
