@@ -2,7 +2,7 @@
 use anyhow::{ensure, Context, Result};
 use google_photos_cli::{
     auth,
-    client::{PhotosClient, SearchOptions},
+    client::{PhotosClient, SearchOptions, SearchSort},
     search::{compose_query, DateRange},
 };
 use serde_json::json;
@@ -93,8 +93,72 @@ fn search_tactics_against_your_own_library() -> Result<()> {
                 "Pagination repeated previously returned photos"
             );
         }
-        let text = client.search(&keyword, 3, None)?;
-        ensure!(!text.items.is_empty(), "Known keyword returned no results");
+        for (sort, ordering, other_sort) in [
+            (SearchSort::Relevant, "relevant", SearchSort::Recent),
+            (SearchSort::Recent, "recent", SearchSort::Relevant),
+        ] {
+            let page_options = SearchOptions {
+                limit: 3,
+                sort: Some(sort),
+                ..SearchOptions::default()
+            };
+            let page = client.search_people(&keyword, &[], &[], page_options.clone(), None)?;
+            let bulk = client.search_people(
+                &keyword,
+                &[],
+                &[],
+                SearchOptions {
+                    limit: 6,
+                    all: true,
+                    ..page_options.clone()
+                },
+                None,
+            )?;
+            ensure!(page.ordering == ordering && bulk.ordering == ordering);
+            ensure!(!page.items.is_empty(), "Known keyword returned no results");
+            ensure!(
+                page.items
+                    .iter()
+                    .map(|p| &p.id)
+                    .eq(bulk.items.iter().take(3).map(|p| &p.id)),
+                "--all changed the selected result order"
+            );
+            if let Some(token) = &page.next_page_token {
+                let wrong_sort = client.search_people(
+                    &keyword,
+                    &[],
+                    &[],
+                    SearchOptions {
+                        sort: Some(other_sort),
+                        ..page_options.clone()
+                    },
+                    Some(token),
+                );
+                ensure!(
+                    wrong_sort.is_err(),
+                    "Cursor accepted under a different sort"
+                );
+                let resumed = client.search_people(
+                    &keyword,
+                    &[],
+                    &[],
+                    SearchOptions {
+                        all: true,
+                        ..page_options
+                    },
+                    Some(token),
+                )?;
+                ensure!(!page.complete && page.stop_reason == "result_limit");
+                ensure!(
+                    resumed.items.iter().map(|p| &p.id).eq(bulk
+                        .items
+                        .iter()
+                        .skip(3)
+                        .map(|p| &p.id)),
+                    "Resuming with --all did not continue at the next result"
+                );
+            }
+        }
         let place_query = compose_query(None, Some(&location), &[]);
         let place = client.search(&place_query, 3, None)?;
         ensure!(

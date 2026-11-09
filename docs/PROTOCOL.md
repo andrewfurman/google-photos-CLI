@@ -6,7 +6,7 @@ The baseline framing and metadata positions are credited in the third-party noti
 
 | Operation | RPC | Payload / returned fields |
 | --- | --- | --- |
-| Keyword search / bulk keyword paging | `EzkLib` | Query in payload `[7][0]`; result mode `[6]=2` selects the most-relevant set. `--all` uses mode 1, the browser’s recent matching set. The legacy three-field query form is not used. |
+| Keyword search / bulk keyword paging | `EzkLib` | Query in payload `[7][0]`; result mode `[6]=2` selects the most-relevant set. `--sort recent` uses mode 1, the browser’s recent matching set. Paging limits are independent of mode. The legacy three-field query form is not used. |
 | Named face groups | `yQelMe` | `[null,null,null,[[1,null,1]]]`; section type 1 under response `[1]` contains face groups. |
 | People-only search | `EzkLib` | Selected face-group ID in filter `[7][1][0][0][0][0][1]`; mode 1 matches the People & Pets navigation's recent results. |
 | Keyword plus person | `EzkLib` + `fDcn4b` | Fetch relevant keyword results and verify each result's per-photo face-group IDs locally. Google's mode 1 ignored the keyword in a combined filter, while mode 2 returned no matches for a known matching photo; neither is trusted for intersection. |

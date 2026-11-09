@@ -54,7 +54,9 @@ containing both people. The test:
 1. Requests up to 100 photos containing both selected face groups.
 2. Independently reads every returned photo's metadata and confirms **both** IDs.
 3. Follows a continuation token and checks for overlap with the earlier page.
-4. Checks known keyword and location queries return results.
+4. Checks both keyword sort modes, verifies that bulk paging preserves sort,
+   and tests resuming with a different paging budget. Checks that a known
+   location query returns results.
 5. Checks a known date range and verifies every returned capture date.
 6. Confirms inspection exposes the expected metadata fields (null is allowed for
    values Google does not provide).

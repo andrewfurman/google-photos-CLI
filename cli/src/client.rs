@@ -16,10 +16,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum SearchSort {
+    Relevant,
+    Recent,
+}
+
 #[derive(Clone)]
 pub struct SearchOptions {
     pub limit: usize,
     pub all: bool,
+    pub sort: Option<SearchSort>,
     pub max_seconds: u64,
     pub dates: crate::search::DateRange,
 }
@@ -28,6 +35,7 @@ impl Default for SearchOptions {
         Self {
             limit: 20,
             all: false,
+            sort: None,
             max_seconds: 120,
             dates: crate::search::DateRange::default(),
         }
@@ -304,10 +312,16 @@ impl PhotosClient {
         let verify_people =
             !people.is_empty() && (!query.is_empty() || people.len() > 1 || timeline);
         let required = people.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-        let ordering = if query.is_empty() || options.all {
-            "recent"
-        } else {
-            "relevant"
+        let sort = match (query.is_empty(), options.sort) {
+            (true, Some(SearchSort::Relevant)) => {
+                bail!("--sort relevant requires a text query. People-only and date-only searches use recent order");
+            }
+            (true, _) => SearchSort::Recent,
+            (false, sort) => sort.unwrap_or(SearchSort::Relevant),
+        };
+        let ordering = match sort {
+            SearchSort::Relevant => "relevant",
+            SearchSort::Recent => "recent",
         };
         let date_range = json!({"from":options.dates.from.map(|d|d.to_string()),"to":options.dates.to.map(|d|d.to_string())});
         let scope=json!({"query":query,"people":required,"ordering":ordering,"dates":date_range,"timeline":timeline}).to_string();
@@ -366,7 +380,7 @@ impl PhotosClient {
                     protocol::keyword_search_payload_ordered(
                         query,
                         cursor.server_token.as_deref(),
-                        options.all,
+                        sort == SearchSort::Recent,
                     ),
                 )
             };
