@@ -49,13 +49,38 @@ pub fn globals(html: &str) -> Result<Value> {
     }
     Ok(value)
 }
+#[derive(Debug)]
+pub(crate) struct RateLimit {
+    pub(crate) source: &'static str,
+    pub(crate) retry_after: Option<std::time::Duration>,
+}
+
+impl std::fmt::Display for RateLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Google Photos is limiting requests ({}).", self.source)?;
+        match self.retry_after {
+            Some(delay) => write!(f, " Retry after {} seconds.", delay.as_secs()),
+            None => write!(
+                f,
+                " Wait before retrying. Google did not provide a reset time."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RateLimit {}
+
 fn rpc_rejection(frame: &[Value]) -> anyhow::Error {
     let status = frame
         .get(5)
         .and_then(|value| value.get(0))
         .and_then(Value::as_i64);
     match status {
-        Some(8) => anyhow!("Google Photos is limiting requests (RPC code 8: RESOURCE_EXHAUSTED). Wait before retrying. Google did not provide a reset time"),
+        Some(8) => RateLimit {
+            source: "RPC code 8: RESOURCE_EXHAUSTED",
+            retry_after: None,
+        }
+        .into(),
         Some(16) => anyhow!("Google Photos authentication expired or is invalid. Sign in with Chrome and reimport your session"),
         Some(code) => anyhow!("Google Photos rejected the request (RPC code {code})"),
         None => anyhow!("Google Photos rejected the request without a status code"),
@@ -364,14 +389,14 @@ pub fn rpc_batch_data(body: &str, rpc: &str, count: usize) -> Result<Vec<Value>>
         if a.first().and_then(Value::as_str) == Some("wrb.fr")
             && a.get(1).and_then(Value::as_str) == Some(rpc)
         {
-            let id = a
-                .get(6)
-                .and_then(Value::as_str)
-                .context("Batched RPC has no request ID")?;
             let text = a
                 .get(2)
                 .and_then(Value::as_str)
                 .ok_or_else(|| rpc_rejection(a))?;
+            let id = a
+                .get(6)
+                .and_then(Value::as_str)
+                .context("Batched RPC has no request ID")?;
             if out
                 .insert(
                     id.into(),
