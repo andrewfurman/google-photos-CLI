@@ -18,11 +18,14 @@ fn help_explains_auth_search_download_and_refresh_without_authenticating() {
         "session stays valid",
         "help search",
         "--all",
-        "--location",
         "--from",
     ] {
         assert!(text.contains(phrase), "missing {phrase}");
     }
+    assert!(
+        text.find("gphotos search \"birthday cake\"").unwrap()
+            < text.find("ADVANCED SEARCH OPTIONS:").unwrap()
+    );
     for command in [
         vec!["help", "search"],
         vec!["auth", "chrome", "--help"],
@@ -60,7 +63,9 @@ fn detailed_help_documents_filters_pagination_metadata_and_session_refresh() {
         (
             vec!["help", "search"],
             vec![
-                "AND",
+                "Advanced filters:",
+                "ADVANCED SEARCH OPTIONS:",
+                "gphotos search \"birthday cake\"",
                 "--page-token",
                 "--all",
                 "YYYY-MM-DD",

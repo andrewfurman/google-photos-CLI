@@ -11,15 +11,18 @@ const EXAMPLES: &str = "GET STARTED:
   Any platform:   gphotos auth cookies /path/to/cookies.txt
   Other machine:  gphotos auth import /path/to/session.env
 
-SEARCH EXAMPLES:
-  gphotos search \"Emma and Lucy in Philadelphia October 2026\"
-  gphotos search --person \"Emma Example\" --person \"Lucy Example\" --all --limit 500
-  gphotos search --location \"Philadelphia, Pennsylvania\" --all
-  gphotos search --location Philly --tag \"birthday cake\"
-  gphotos search --from 2026-10-01 --to 2026-10-31 --all
-  gphotos search beach --person Emma --from 2026-01-01 --to 2026-12-31
-  gphotos search \"birthday cake\" --limit 100 --json
-  gphotos search \"birthday cake\" --limit 100 --json --page-token TOKEN
+SEARCH LIKE GOOGLE PHOTOS:
+  gphotos search \"birthday cake\"
+  gphotos search \"Philadelphia October 2026\"
+  gphotos search \"Emma and Lucy at the beach\"
+
+Enter one phrase with names, places, dates, or objects. Google interprets it
+like a search in the browser. Run 'gphotos help search' for more options.
+
+ADVANCED SEARCH OPTIONS:
+  gphotos search --person \"Emma Example\" --person \"Lucy Example\"
+  gphotos search --from 2026-10-01 --to 2026-10-31
+  gphotos search \"birthday cake\" --all --limit 100 --json
 
 PHOTO METADATA AND DOWNLOAD:
   gphotos inspect PHOTO_ID --json
@@ -70,9 +73,40 @@ enum Command {
         command: AuthCommand,
     },
     /// Search Google's text, people, places, dates, and content; paginate long lists
-    #[command(
-        after_help = "EXAMPLES:\n  gphotos search \"Philadelphia October 2026\"\n  gphotos search --location Philly\n  gphotos search --tag beach\n  gphotos search --person \"Emma Example\" --person \"Lucy Example\" --all --limit 500\n  gphotos search --from 2026-10-01 --to 2026-10-31 --all\n  gphotos search beach --limit 100 --json --page-token TOKEN\n\nThe single query is sent to Google Photos just like browser search. --location\nand --tag add text terms; they are not strict GPS or custom-tag predicates.\nGoogle interprets synonyms, place names, objects, and free-form date phrases.\n\nRepeat --person and/or --person-id for AND: every selected person must be tagged\nin the same photo. Names must resolve uniquely; full names disambiguate them.\nMultiple people and person+keyword searches verify exact per-photo face-group IDs.\nUnknown tags are excluded; no identities are inferred from images or filenames.\n\n--from/--to are inclusive YYYY-MM-DD capture dates in each photo's returned time\nzone. Unknown dates are excluded. Date-only searches use Google's chronological\nlibrary, positioned at --to; all other text/place/content matching stays Google's.\n\nDefault: 20 matches, up to 100 candidates when local verification is needed.\n--all follows pages automatically: default cap 10000 matches, 1000 pages, 120s\nsoft budget. --limit and --max-seconds override caps. Ordinary keyword results\nuse Google's most-relevant set; --all uses its recent matching set for bulk paging.\nThese Google result sets can differ. JSON includes ordering, people, person_match,\ncandidates_checked, complete, stop_reason, and next_page_token. If incomplete,\nrepeat the identical filters and --all setting with --page-token TOKEN.\n--download DIRECTORY downloads displayed matches without changing the library."
-    )]
+    #[command(after_help = r#"SEARCH LIKE GOOGLE PHOTOS:
+  gphotos search "birthday cake"
+  gphotos search "Philadelphia October 2026"
+  gphotos search "Emma and Lucy at the beach"
+
+Enter one phrase with names, places, dates, or objects. Google interprets it
+like a search in the browser. --location and --tag add text to that same query.
+
+ADVANCED SEARCH OPTIONS:
+  gphotos search --person "Emma Example" --person "Lucy Example"
+  gphotos search --from 2026-10-01 --to 2026-10-31
+  gphotos search beach --person "Emma Example" --from 2026-10-01
+
+Repeat --person and/or --person-id to require every selected face group in the
+same photo. Names must resolve uniquely. Use full names to disambiguate them.
+Multiple people and person+keyword searches verify exact per-photo face-group
+IDs. Photos with unknown tags are excluded.
+
+--from and --to enforce inclusive YYYY-MM-DD capture dates in each photo's
+returned timezone. Photos with unknown capture dates are excluded. Date-only
+searches use Google's chronological library, positioned at --to.
+
+PAGINATION AND OUTPUT:
+  gphotos search "birthday cake" --limit 100 --json
+  gphotos search "birthday cake" --limit 100 --json --page-token TOKEN
+
+Default: 20 matches, up to 100 candidates when local verification is needed.
+--all follows pages automatically: default cap 10000 matches, 1000 pages, 120s
+soft budget. --limit and --max-seconds override caps. Ordinary keyword results
+use Google's most-relevant set; --all uses its recent matching set for bulk paging.
+These Google result sets can differ. JSON includes ordering, people, person_match,
+candidates_checked, complete, stop_reason, and next_page_token. If incomplete,
+repeat the identical filters and --all setting with --page-token TOKEN.
+--download DIRECTORY downloads displayed matches without changing the library."#)]
     Search(SearchArgs),
     /// List Google's returned face groups and their IDs (named groups by default)
     People {
@@ -153,10 +187,10 @@ struct SearchArgs {
     /// A Google Photos search query (quote multiple words)
     query: Option<String>,
     /// Named tagged person (unique full or partial face-group name)
-    #[arg(long)]
+    #[arg(long, help_heading = "Advanced filters")]
     person: Vec<String>,
     /// Exact face-group ID from 'gphotos people'
-    #[arg(long)]
+    #[arg(long, help_heading = "Advanced filters")]
     person_id: Vec<String>,
     /// Location phrase sent unchanged to Google's search (e.g. Philly)
     #[arg(long)]
@@ -165,10 +199,10 @@ struct SearchArgs {
     #[arg(long)]
     tag: Vec<String>,
     /// Inclusive capture-date lower bound, YYYY-MM-DD
-    #[arg(long)]
+    #[arg(long, help_heading = "Advanced filters")]
     from: Option<String>,
     /// Inclusive capture-date upper bound, YYYY-MM-DD
-    #[arg(long)]
+    #[arg(long, help_heading = "Advanced filters")]
     to: Option<String>,
     /// Follow Google result pages automatically (default cap: 10000 matches)
     #[arg(long)]

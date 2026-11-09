@@ -1,8 +1,7 @@
 # google-photos-CLI
 
-An unofficial **Rust CLI for Google Photos**. Search your own library by keyword
-or tagged person, inspect camera/location/people metadata, and download full-size
-photos and videos. The command is `gphotos`.
+An unofficial **Rust CLI for Google Photos**. Search your library the way you would in Google Photos,
+inspect camera/location/people metadata, and download full-size photos and videos. The command is `gphotos`.
 
 **macOS, Linux, and Windows** support portable session and cookie-file imports.
 Direct import from Chrome's encrypted cookie database is currently macOS-only.
@@ -102,25 +101,20 @@ Normal commands never print the value. Avoid sharing it in issues or shell histo
 
 ## Search, inspect, and download
 
+Pass a single phrase to `gphotos search`, just like typing into the Google Photos
+search bar. Use names, places, dates, objects, or a mix of them.
+
 ```bash
-# Keywords, objects, places, or text in images
-gphotos search "birthday cake" --limit 20
+gphotos search "birthday cake"
+gphotos search "Philadelphia October 2026"
+gphotos search "Emma and Lucy at the beach"
+```
 
-# Discover named people and their face-group IDs
-gphotos people --name Emma
+Use a photo ID from the results to inspect its metadata or download it:
 
-# Photos tagged with a particular person
-gphotos search --person Emma
-gphotos search --person Lucy
-
-# Combine a keyword with the structured person filter
-gphotos search beach --person Emma --json
-
-# Camera, GPS/location, dates, file information, and tagged people
+```bash
 gphotos inspect PHOTO_ID
 gphotos inspect PHOTO_ID --json
-
-# Full-size media by an ID returned from search
 gphotos download PHOTO_ID --dir ./photos
 gphotos download PHOTO_ID --output ./exact-filename.jpg --json
 
@@ -128,17 +122,9 @@ gphotos download PHOTO_ID --output ./exact-filename.jpg --json
 gphotos search "Paris 2025" --limit 10 --download ./photos
 ```
 
-### One search command, several ways to use it
+## Advanced search options
 
-The positional query goes to Google Photos' search, like the browser search bar.
-Use your own people names, place names, dates, objects, or other search phrases:
-
-```bash
-gphotos search "Emma and Lucy in Philadelphia October 2026"
-gphotos search "Philly"
-gphotos search "Philadelphia, Pennsylvania"
-gphotos search "birthday cake"
-```
+### Add text terms in scripts
 
 Free-form query meaning and synonyms are Google's. The CLI does not geocode a
 place name, expand "Philly" itself, or run its own image-content classifier.
@@ -185,7 +171,7 @@ Date phrases can be part of the browser-style query. For exact inclusive bounds:
 
 ```bash
 gphotos search --from 2026-10-01 --to 2026-10-31 --all
-gphotos search --location Philly --from 2026-01-01 --to 2026-12-31 --all
+gphotos search Philly --from 2026-01-01 --to 2026-12-31 --all
 gphotos search --person "Emma Example" --person "Lucy Example" --from 2026-10-01 --to 2026-10-31 --all
 ```
 
