@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use google_photos_cli::{
     auth::{self, Session},
     client::{self, PhotosClient, SearchOptions, SearchSort},
+    protocol::SessionExpired,
 };
 use std::path::PathBuf;
 
@@ -37,7 +38,8 @@ PORTABLE AUTHENTICATION:
   gphotos help auth
 
 One GPHOTOS_SESSION value stores the cookie bundle in a private .env file.
-Normal commands never use Keychain. This is not a permanent Google API token:
+Searches can reimport an expired local Chrome session on macOS.
+This is not a permanent Google API token:
 there is no reliable single lifetime or supported OAuth refresh token. Google
 can expire/revoke it before individual cookies expire. Browser use does not
 ensure the imported session stays valid. Sign in in your browser and reimport
@@ -66,7 +68,7 @@ struct Cli {
 enum Command {
     /// Import, check, refresh, or remove the locally saved session
     #[command(
-        after_help = "SESSION LIFETIME AND REFRESH:\n  gphotos auth status\n\nNo single guaranteed expiry exists: GPHOTOS_SESSION packages several cookies.\nGoogle can revoke it before their expiry dates. There is no supported OAuth\nrefresh token for this method. Normal commands persist returned cookie updates\nto the selected .env file, but cannot renew a revoked Google login.\n\nWhen authentication fails:\n  1. Sign in / complete any verification at photos.google.com in your browser.\n  2. macOS: gphotos auth chrome; any OS: gphotos auth cookies /path/to/cookies.txt\n  3. gphotos auth status\n  4. gphotos auth export --output new-session.env\n     On another machine: gphotos auth import new-session.env\n\nExport destinations must be new files; existing exports are not overwritten."
+        after_help = "SESSION LIFETIME AND REFRESH:\n  gphotos auth status\n\nNo single guaranteed expiry exists: GPHOTOS_SESSION packages several cookies.\nGoogle can revoke it before their expiry dates. There is no supported OAuth\nrefresh token for this method. Normal commands persist returned cookie updates\nto the selected .env file, but cannot renew a revoked Google login.\n\nOn macOS, search retries once after refreshing an expired session saved by\ngphotos auth chrome. Chrome must still be signed into the same account.\n\nIf automatic refresh is unavailable or fails:\n  1. Sign in / complete any verification at photos.google.com in your browser.\n  2. macOS: gphotos auth chrome; any OS: gphotos auth cookies /path/to/cookies.txt\n  3. gphotos auth status\n  4. gphotos auth export --output new-session.env\n     On another machine: gphotos auth import new-session.env\n\nExport destinations must be new files; existing exports are not overwritten."
     )]
     Auth {
         #[command(subcommand)]
@@ -250,7 +252,13 @@ fn print_json(value: &impl serde::Serialize) -> Result<()> {
     Ok(())
 }
 fn with_saved<T>(run: impl FnOnce(&mut PhotosClient) -> Result<T>) -> Result<T> {
-    let mut client = PhotosClient::connect(auth::load()?)?;
+    run_and_save(PhotosClient::connect(auth::load()?)?, run)
+}
+
+fn run_and_save<T>(
+    mut client: PhotosClient,
+    run: impl FnOnce(&mut PhotosClient) -> Result<T>,
+) -> Result<T> {
     let result = run(&mut client);
     // Even a failed search may have rotated session cookies.
     let saved = client.save();
@@ -266,6 +274,34 @@ fn with_saved<T>(run: impl FnOnce(&mut PhotosClient) -> Result<T>) -> Result<T> 
         result
     }
 }
+fn with_search_session<T>(mut search: impl FnMut(&mut PhotosClient) -> Result<T>) -> Result<T> {
+    let session = auth::load()?;
+    let target = session.chrome_refresh_target();
+    let result =
+        PhotosClient::connect(session).and_then(|client| run_and_save(client, &mut search));
+    let Some((profile, account, expected_email)) = target else {
+        return result;
+    };
+    if !result
+        .as_ref()
+        .is_err_and(|error| error.is::<SessionExpired>())
+    {
+        return result;
+    }
+
+    eprintln!("Google Photos session expired. Refreshing from the saved Chrome profile and retrying once…");
+    let store = auth::import_chrome(&profile).context("Could not refresh from Chrome")?;
+    let mut client = PhotosClient::connect(Session::new(&store, account, Some(profile))?)?;
+    if !client
+        .account_email()
+        .is_some_and(|email| email.eq_ignore_ascii_case(&expected_email))
+    {
+        bail!("Chrome is signed into a different Google Photos account. Sign into the original account and run 'gphotos auth chrome'");
+    }
+    client.enable_chrome_refresh();
+    client.save()?;
+    run_and_save(client, search)
+}
 fn run(cli: Cli) -> Result<()> {
     if let Some(path) = cli.session_file {
         std::env::set_var("GPHOTOS_SESSION_FILE", path);
@@ -277,7 +313,8 @@ fn run(cli: Cli) -> Result<()> {
                     eprintln!("Importing Chrome session; macOS may prompt for Chrome Safe Storage access…");
                     let store = auth::import_chrome(&profile)?;
                     let session = Session::new(&store, account, Some(profile))?;
-                    let client = PhotosClient::connect(session)?;
+                    let mut client = PhotosClient::connect(session)?;
+                    client.enable_chrome_refresh();
                     client.save()?;
                     println!(
                         "Google Photos session saved to {}. Account: {} (index {}).",
@@ -306,15 +343,12 @@ fn run(cli: Cli) -> Result<()> {
                 AuthCommand::MigrateKeychain => {
                     let client = PhotosClient::connect(auth::import_legacy_keychain()?)?;
                     client.save()?;
-                    println!(
-                        "Session migrated to {}. Normal commands no longer use Keychain.",
-                        auth::session_path()?.display()
-                    );
+                    println!("Session migrated to {}.", auth::session_path()?.display());
                 }
                 AuthCommand::Export { output, token } => {
                     let session = auth::load()?;
                     if token {
-                        println!("{}", session.token()?);
+                        println!("{}", session.portable_token()?);
                     } else if let Some(path) = output {
                         session.export(&path)?;
                         println!("Private session exported to {}. Copy it securely to the other machine and run 'gphotos auth import FILE'.",path.display());
@@ -366,7 +400,7 @@ fn run(cli: Cli) -> Result<()> {
             if count > 1 || (count > 0 && (!query.is_empty() || dates.active())) {
                 eprintln!("Verifying that every selected person is tagged in each result…");
             }
-            with_saved(|client| {
+            with_search_session(|client| {
                 let result = client.search_people(
                     &query,
                     &args.person,
@@ -376,7 +410,7 @@ fn run(cli: Cli) -> Result<()> {
                         all: args.all,
                         sort: args.sort,
                         max_seconds: args.max_seconds,
-                        dates,
+                        dates: dates.clone(),
                     },
                     args.page_token.as_deref(),
                 )?;

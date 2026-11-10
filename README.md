@@ -35,7 +35,7 @@ gphotos auth chrome
 ```
 
 macOS may ask for **Chrome Safe Storage** access to decrypt the browser cookies.
-That permission is needed only during Chrome import, not for normal commands.
+Searches may also need this permission when refreshing an expired session.
 The validated session is saved in a private `.env` file.
 
 For a different Chrome profile or Google account:
@@ -305,7 +305,15 @@ method has no supported OAuth refresh token or guaranteed renewal endpoint.
 `gphotos auth status` checks current usability rather than promising a future
 expiry date.
 
-When authentication fails:
+On macOS, a search can refresh a session saved by `gphotos auth chrome`. It
+tries once when Google reports an authentication failure, using the saved Chrome
+profile and verifying the Google account before saving. Chrome must still be
+signed in, and macOS may prompt for Chrome Safe Storage access. Run
+`gphotos auth chrome` once after upgrading to enable this for an older session.
+Cookie-file imports, portable imports, and sessions supplied via the environment
+use manual refresh.
+
+If automatic refresh is unavailable or fails:
 
 1. Open Google Photos in your browser and sign in or complete Google's verification.
 2. Import fresh cookies: `gphotos auth chrome` on macOS, or `gphotos auth cookies FILE` on any supported platform.
@@ -324,7 +332,8 @@ gphotos logout
 Logout clears the selected local session file; it does not revoke exported copies
 or sign your browser out. Unset `GPHOTOS_SESSION` too if you supplied it in your shell.
 For users upgrading from version 0.1, `gphotos auth migrate-keychain` performs a
-one-time macOS Keychain import. Normal current commands do not use Keychain.
+one-time macOS Keychain import. Search uses Chrome Safe Storage only when
+refreshing an expired local Chrome session.
 
 ## Help
 

@@ -11,11 +11,13 @@ use std::{
 const PREFIX: &str = "gphotos_v1_";
 
 // Deliberately does not implement Debug: this contains credentials.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     pub account_index: u32,
     pub chrome_profile: Option<String>,
     pub cookies: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) local_chrome_account: Option<String>,
     #[serde(skip)]
     source: Option<PathBuf>,
     #[serde(skip)]
@@ -30,6 +32,7 @@ impl Session {
             account_index,
             chrome_profile: profile,
             cookies: serde_json::from_slice(&bytes)?,
+            local_chrome_account: None,
             source: None,
             environment_only: false,
         })
@@ -57,7 +60,9 @@ impl Session {
         }
         let bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid())?;
         let session: Self = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-        if session.store()?.iter_any().count() == 0 {
+        if session.store()?.iter_unexpired().next().is_none()
+            && session.local_chrome_account.is_none()
+        {
             bail!("The session contains no unexpired cookies. Import fresh browser cookies");
         }
         Ok(session)
@@ -74,16 +79,34 @@ impl Session {
     }
     pub fn save_store(&self, store: &CookieStore) -> Result<()> {
         let mut updated = Self::new(store, self.account_index, self.chrome_profile.clone())?;
+        updated.local_chrome_account = self.local_chrome_account.clone();
         updated.source = self.source.clone();
         updated.environment_only = self.environment_only;
         updated.save()
     }
     /// Imported sessions are explicitly saved in the selected destination, not their source file.
     pub fn import_file(path: &Path) -> Result<Self> {
-        read_session(path)
+        let mut session = read_session(path)?;
+        session.local_chrome_account = None;
+        Ok(session)
+    }
+    pub fn portable_token(&self) -> Result<String> {
+        let mut portable = self.clone();
+        portable.local_chrome_account = None;
+        portable.token()
+    }
+    pub fn chrome_refresh_target(&self) -> Option<(String, u32, String)> {
+        if !cfg!(target_os = "macos") || self.environment_only {
+            return None;
+        }
+        Some((
+            self.chrome_profile.clone()?,
+            self.account_index,
+            self.local_chrome_account.clone()?,
+        ))
     }
     pub fn export(&self, path: &Path) -> Result<()> {
-        write_env(path, &self.token()?, false)
+        write_env(path, &self.portable_token()?, false)
     }
 }
 
@@ -466,13 +489,20 @@ mod portable_tests {
     fn portable_bundle_roundtrips_without_keychain_and_exports_one_value() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.env");
-        let s = sample();
+        let mut s = sample();
+        s.local_chrome_account = Some("synthetic@example.invalid".into());
+        assert!(Session::from_token(&s.token().unwrap())
+            .unwrap()
+            .local_chrome_account
+            .is_some());
         s.export(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 1);
         assert!(text.starts_with("GPHOTOS_SESSION=gphotos_v1_"));
         let imported = Session::import_file(&path).unwrap();
         assert_eq!(imported.account_index, 1);
+        assert!(read_session(&path).unwrap().local_chrome_account.is_none());
+        assert!(imported.chrome_refresh_target().is_none());
         assert_eq!(imported.store().unwrap().iter_any().count(), 1);
         assert!(s.export(&path).is_err());
         #[cfg(unix)]

@@ -1,6 +1,6 @@
 use crate::{
     auth::Session,
-    protocol::{self, Photo, RateLimit},
+    protocol::{self, Photo, RateLimit, SessionExpired},
 };
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -167,7 +167,11 @@ fn allowed_host(url: &url::Url) -> bool {
 }
 impl PhotosClient {
     pub fn connect(session: Session) -> Result<Self> {
-        let cookies = Arc::new(CookieStoreMutex::new(session.store()?));
+        let store = session.store()?;
+        if store.iter_unexpired().next().is_none() {
+            return Err(SessionExpired.into());
+        }
+        let cookies = Arc::new(CookieStoreMutex::new(store));
         let http = Client::builder()
             .cookie_provider(cookies.clone())
             .timeout(Duration::from_secs(120))
@@ -186,6 +190,11 @@ impl PhotosClient {
         let url = format!("https://photos.google.com/u/{}/", session.account_index);
         let response = network(http.get(&url).send())?;
         let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            || response.url().host_str() == Some("accounts.google.com")
+        {
+            return Err(SessionExpired.into());
+        }
         if !status.is_success() {
             bail!("Google Photos login check returned HTTP {status}. Import fresh cookies or an exported session");
         }
@@ -211,6 +220,9 @@ impl PhotosClient {
             rpc_endpoint: None,
         };
         Ok(client)
+    }
+    pub fn enable_chrome_refresh(&mut self) {
+        self.session.local_chrome_account = self.account_email().map(str::to_owned);
     }
     pub fn account_email(&self) -> Option<&str> {
         self.globals["oPEP7c"].as_str()
@@ -314,6 +326,11 @@ impl PhotosClient {
                 retry_after: delay,
             }
             .into());
+        }
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            || response.url().host_str() == Some("accounts.google.com")
+        {
+            return Err(SessionExpired.into());
         }
         if !status.is_success() {
             bail!("Google Photos RPC returned HTTP {status}; sign in with Chrome and reimport if authentication expired");
