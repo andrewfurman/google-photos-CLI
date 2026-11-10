@@ -70,6 +70,17 @@ impl std::fmt::Display for RateLimit {
 
 impl std::error::Error for RateLimit {}
 
+#[derive(Debug)]
+pub struct SessionExpired;
+
+impl std::fmt::Display for SessionExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Google Photos authentication expired or is invalid. Sign in with Chrome and reimport your session")
+    }
+}
+
+impl std::error::Error for SessionExpired {}
+
 fn rpc_rejection(frame: &[Value]) -> anyhow::Error {
     let status = frame
         .get(5)
@@ -81,7 +92,7 @@ fn rpc_rejection(frame: &[Value]) -> anyhow::Error {
             retry_after: None,
         }
         .into(),
-        Some(16) => anyhow!("Google Photos authentication expired or is invalid. Sign in with Chrome and reimport your session"),
+        Some(16) => SessionExpired.into(),
         Some(code) => anyhow!("Google Photos rejected the request (RPC code {code})"),
         None => anyhow!("Google Photos rejected the request without a status code"),
     }
