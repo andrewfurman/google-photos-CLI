@@ -1,7 +1,8 @@
 # google-photos-CLI
 
 An unofficial **Rust CLI for Google Photos**. Search your library the way you would in Google Photos,
-inspect camera/location/people metadata, and download full-size photos and videos. The command is `gphotos`.
+inspect camera/location/people metadata and every detected face, tag an untagged face with an existing
+person, and download full-size photos and videos. The command is `gphotos`.
 
 **macOS, Linux, and Windows** support portable session and cookie-file imports.
 Direct import from Chrome's encrypted cookie database is currently macOS-only.
@@ -195,11 +196,34 @@ are strict checks; text/place/content interpretation remains Google's.
 - Camera manufacturer/model, lens when available, focal length, aperture, ISO, and exposure time.
 - Latitude/longitude and Google Photos' location labels when available.
 - Tagged face groups, albums, upload source, favorites/archive flags, storage quality and usage.
+- Every detected face (`faces`), tagged or not: a left-to-right `index`, the stable `face_id`,
+  a normalized `box` (`left`/`top`/`right`/`bottom`, 0–1), `box_px` in pixels, and the
+  assigned face group (`person`, `tagged`). `faces_status=not_returned` means Google sent no face list.
 - Video duration and Live Photo presence when returned.
 
 Missing values remain `null`; unavailable fields are not guessed. These fields
 are Google's metadata, not a promise to expose every possible EXIF/IPTC tag.
 A location may have been estimated or edited in Google Photos.
+
+### Tag a face with an existing person
+
+`gphotos tag` is the only command that changes your library. It assigns one
+detected face to an existing face group, the same edit as Info → People → Edit
+faces → Add → person → Done on photos.google.com.
+
+```bash
+gphotos inspect PHOTO_ID                                   # faces: [index] box  person|untagged
+gphotos tag PHOTO_ID --face 0 --person "Emma Example" --dry-run
+gphotos tag PHOTO_ID --face 0 --person "Emma Example"
+gphotos tag PHOTO_ID --face-id FACE_ID --person-id GROUP_ID --json
+```
+
+- `--person` must match exactly one named face group (same rules as `search --person`);
+  ambiguous or unknown names fail. `--person-id` must be a group ID from `gphotos people`.
+- A face that is already tagged is refused unless `--force`; one already tagged with
+  the same person is left alone. New people cannot be created or named here.
+- `--dry-run` prints the exact request (`k9FTge` payload) and sends nothing.
+- The write is sent once (never retried) and confirmed from Google's response.
 
 ### Pagination and long result lists
 
@@ -343,6 +367,7 @@ Help works offline and never reads session credentials.
 gphotos help
 gphotos help search
 gphotos help inspect
+gphotos help tag
 gphotos help auth export
 gphotos help auth import
 ```
@@ -359,7 +384,8 @@ gphotos help auth import
 | `logout` / `auth logout` | Clear the selected local session file |
 | `people [--name NAME]` | List Google's returned face groups |
 | `search [QUERY]` | One search interface for text, repeated people, locations, content phrases, dates, and pagination |
-| `inspect PHOTO_ID` | Read photo metadata and people tags |
+| `inspect PHOTO_ID` | Read photo metadata, people tags, and every detected face |
+| `tag PHOTO_ID --face N --person NAME` | Tag one detected face with an existing person (writes; `--dry-run` available) |
 | `download PHOTO_ID` | Save full-size media |
 
 ## Limitations and troubleshooting

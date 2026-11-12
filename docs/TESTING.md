@@ -25,6 +25,13 @@ Google account, location history, or real photographs are supplied to CI.
   missing responses, to prevent assigning one photo's people to another photo.
 - Inspection includes filename, caption/description, capture date/time, camera
   make/model/lens/settings, latitude/longitude, and named/unnamed face groups.
+- Faces: every detected face is listed with a left-to-right index, normalized and
+  pixel boxes, and its face group; internal clusters are not reported as people. The
+  `k9FTge` tag request equals a recorded web-client request, and the response must
+  link the face to the person. Fixtures in `cli/tests/fixtures` are recorded traffic
+  with every ID, name, URL and timestamp replaced by synthetic values.
+- `tag` requires one face and one existing person, refuses ambiguous names, and
+  fails before authentication on invalid IDs or flag combinations.
 - Help documents the query tactics, long-list limits, cursor continuation,
   inspection fields, session lifetime, and platform-appropriate refresh commands.
 - Session portability, file permissions, secret-free errors, and download
