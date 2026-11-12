@@ -32,6 +32,7 @@ fn help_explains_auth_search_download_and_refresh_without_authenticating() {
         vec!["download", "--help"],
         vec!["inspect", "--help"],
         vec!["people", "--help"],
+        vec!["tag", "--help"],
         vec!["auth", "export", "--help"],
         vec!["auth", "import", "--help"],
     ] {
@@ -48,6 +49,29 @@ fn invalid_inputs_fail_before_accessing_keychain() {
         vec!["search", "beach", "--limit", "0"],
         vec!["download", "../../secret"],
         vec!["inspect", "../../secret"],
+        vec!["tag", "../../secret", "--face", "0", "--person", "Alice"],
+        vec!["tag", "AF1QipSyntheticPhoto", "--person", "Alice"],
+        vec!["tag", "AF1QipSyntheticPhoto", "--face", "0"],
+        vec![
+            "tag",
+            "AF1QipSyntheticPhoto",
+            "--face",
+            "0",
+            "--face-id",
+            "x",
+            "--person",
+            "A",
+        ],
+        vec![
+            "tag",
+            "AF1QipSyntheticPhoto",
+            "--face",
+            "0",
+            "--person",
+            "A",
+            "--person-id",
+            "B",
+        ],
         vec!["auth", "export"],
     ] {
         Command::new(assert_cmd::cargo::cargo_bin!("gphotos"))
@@ -83,6 +107,18 @@ fn detailed_help_documents_filters_pagination_metadata_and_session_refresh() {
                 "lens",
                 "latitude/longitude",
                 "timezone",
+                "every detected face",
+            ],
+        ),
+        (
+            vec!["help", "tag"],
+            vec![
+                "--dry-run",
+                "--force",
+                "--person-id",
+                "--face-id",
+                "already tagged",
+                "gphotos inspect",
             ],
         ),
         (

@@ -1,4 +1,4 @@
-# Read-only protocol mappings
+# Protocol mappings
 
 Google Photos uses undocumented `batchexecute` RPCs. These mappings are observed
 behavior, not a Google-supported contract. No captured account data belongs here.
@@ -15,6 +15,7 @@ The baseline framing and metadata positions are credited in the third-party noti
 | Extended photo info | `fDcn4b` | `[photo_id,1,null,null,1]`; the photo record is response `[0]`. |
 | Photo / download info | `VrseUb` | `[photo_id,null,null,null,null]`; direct full-size/original URLs are response `[1]` and `[7]` when present. |
 | Batched filenames | `EWgK9e` | Options require their own nested array; response `[0][1]` contains filename records. |
+| Tag a face (**write**) | `k9FTge` | `[[null,media_key],[[[face_id],[group_id]]],[[null×20,[]]],[[],[null,null,[null,1]]]]`; `media_key` is extended-record field 11. Response `[0][0]` is the updated photo record; its field `[1][22]` must link `group_id` to `face_id`. |
 
 Extended-photo record positions used by `inspect`: filename 2, capture timestamp 3,
 timezone offset 4, bytes 5, dimensions 6–7, coordinates 9/13, people 18, albums 19,
@@ -26,6 +27,18 @@ A per-photo face-group entry holds the group ID at `[0][0]` and the assigned nam
 at `[1][5]`. Unnamed groups are retained. Owner/contact records elsewhere in the
 response are **not face tags**. Missing face-group metadata is reported as
 `people_status=not_returned`, rather than inferring the photo contains no people.
+
+Detected faces are extended-record field 21: `[[face_id],[left,top,right,bottom],…]`
+with normalized coordinates. Field 20 links clusters to faces:
+`[[cluster_id,[owner,n]],[face_id,…]|null,…]`. A face is tagged when one of its linked
+cluster IDs is a face group in field 18; other linked clusters are internal and
+ignored. `inspect` sorts faces left to right (then top to bottom) and numbers them from 0.
+Field 18 can name a group whose linked face is absent from field 21; such tags are
+reported under `people` only.
+
+The web client sends `k9FTge` when "Edit faces" is confirmed with Done; picking a
+person in the dialog sends nothing by itself. Removing a face and renaming groups
+use other, unmapped requests.
 
 Parsers support sparse trailing field objects. Tests must use synthetic values
 and cover missing/unknown fields, malformed data, and identity boundaries. For

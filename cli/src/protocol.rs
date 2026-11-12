@@ -295,6 +295,8 @@ pub struct Inspection {
     pub location: Option<Location>,
     pub people: Vec<Person>,
     pub people_status: String,
+    pub faces: Vec<Face>,
+    pub faces_status: String,
     pub albums: Vec<Album>,
     pub source: Vec<String>,
     pub is_favorite: Option<bool>,
@@ -502,6 +504,10 @@ pub fn parse_inspection(ext: &Value, info: &Value, id: &str, account: u32) -> Re
     } else {
         (Vec::new(), "not_returned")
     };
+    let (faces, faces_status) = match parse_faces(item, &people)? {
+        Some(faces) => (faces, "available"),
+        None => (Vec::new(), "not_returned"),
+    };
     let mut albums = Vec::new();
     if let Some(rows) = field(item, 19).as_array() {
         for row in rows {
@@ -557,6 +563,8 @@ pub fn parse_inspection(ext: &Value, info: &Value, id: &str, account: u32) -> Re
         location,
         people,
         people_status: people_status.into(),
+        faces,
+        faces_status: faces_status.into(),
         albums,
         source,
         is_favorite: field(extension(base, "163238866"), 0).as_bool(),
@@ -564,6 +572,170 @@ pub fn parse_inspection(ext: &Value, info: &Value, id: &str, account: u32) -> Re
         storage_quality: quality,
         storage_used_bytes: field(field(item, 30), 1).as_u64(),
     })
+}
+
+/// Normalized face rectangle (0.0-1.0 of the image width/height), origin top-left.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FaceBox {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+/// The same rectangle in pixels of the stored image, when its dimensions are known.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct PixelBox {
+    pub x: u64,
+    pub y: u64,
+    pub width: u64,
+    pub height: u64,
+}
+#[derive(Serialize, Clone)]
+pub struct Face {
+    /// 0-based position after sorting faces left to right (then top to bottom).
+    pub index: usize,
+    /// Google's detected-face key; stable across requests for the same face.
+    pub face_id: String,
+    #[serde(rename = "box")]
+    pub bbox: FaceBox,
+    pub box_px: Option<PixelBox>,
+    /// The face group this face is assigned to, if any (named or unnamed).
+    pub person: Option<Person>,
+    pub tagged: bool,
+}
+/// Every detected face in an extended-photo record (`fDcn4b` response `[0]`).
+///
+/// Field 21 lists detected faces as `[[face_id], [left, top, right, bottom], ...]`.
+/// Field 20 links clusters to faces: `[[cluster_id, [owner, n]], [face_id, ...] | null, ...]`.
+/// A face is tagged when one of its linked clusters is a face group listed in field 18.
+/// Internal clusters that are not face groups are ignored. Returns None when Google
+/// did not return the face list at all (unknown, not "no faces").
+pub fn parse_faces(item: &Value, people: &[Person]) -> Result<Option<Vec<Face>>> {
+    let Some(rows) = field(item, 21).as_array() else {
+        return Ok(None);
+    };
+    let width = field(item, 6).as_u64().filter(|w| *w > 0);
+    let height = field(item, 7).as_u64().filter(|h| *h > 0);
+    let links = field(item, 20).as_array().cloned().unwrap_or_default();
+    let mut faces = Vec::new();
+    for row in rows {
+        let face_id = field(field(row, 0), 0)
+            .as_str()
+            .context("Google returned a detected face without an ID")?;
+        let coords = (0..4)
+            .map(|i| field(field(row, 1), i).as_f64())
+            .collect::<Option<Vec<_>>>()
+            .context("Google returned a detected face without a bounding box")?;
+        let bbox = FaceBox {
+            left: coords[0],
+            top: coords[1],
+            right: coords[2],
+            bottom: coords[3],
+        };
+        let box_px = match (width, height) {
+            (Some(w), Some(h)) => {
+                let px = |v: f64, size: u64| (v.clamp(0.0, 1.0) * size as f64).round() as u64;
+                let (x, y) = (px(bbox.left, w), px(bbox.top, h));
+                Some(PixelBox {
+                    x,
+                    y,
+                    width: px(bbox.right, w).saturating_sub(x),
+                    height: px(bbox.bottom, h).saturating_sub(y),
+                })
+            }
+            _ => None,
+        };
+        let person = links
+            .iter()
+            .filter(|link| field(field(link, 1), 0).as_str() == Some(face_id))
+            .filter_map(|link| field(field(link, 0), 0).as_str())
+            .find_map(|cluster| people.iter().find(|p| p.id == cluster))
+            .cloned();
+        faces.push(Face {
+            index: 0,
+            face_id: face_id.into(),
+            bbox,
+            box_px,
+            tagged: person.is_some(),
+            person,
+        });
+    }
+    faces.sort_by(|a, b| {
+        a.bbox
+            .left
+            .total_cmp(&b.bbox.left)
+            .then(a.bbox.top.total_cmp(&b.bbox.top))
+            .then(a.face_id.cmp(&b.face_id))
+    });
+    for (i, face) in faces.iter_mut().enumerate() {
+        face.index = i;
+    }
+    Ok(Some(faces))
+}
+/// What `tag` needs from one extended-photo record.
+pub struct PhotoFaces {
+    pub id: String,
+    pub filename: Option<String>,
+    /// Field 11: the media key Google's web client sends with face edits.
+    pub media_key: String,
+    pub faces: Vec<Face>,
+}
+pub fn parse_photo_faces(ext: &Value, id: &str) -> Result<PhotoFaces> {
+    let item = field(ext, 0);
+    if field(item, 0).as_str() != Some(id) {
+        bail!("Google Photos returned no metadata for this photo ID");
+    }
+    let people = match field(item, 18) {
+        rows if rows.is_array() => parse_people(rows)?,
+        _ => Vec::new(),
+    };
+    let faces = parse_faces(item, &people)?.context(
+        "Google returned no face list for this photo; it may be a video or have no detected faces",
+    )?;
+    Ok(PhotoFaces {
+        id: id.into(),
+        filename: string(field(item, 2)),
+        media_key: string(field(item, 11))
+            .context("Google returned no media key for this photo; face edits are unavailable")?,
+        faces,
+    })
+}
+/// `k9FTge` payload sent by photos.google.com when "Edit faces" assigns a detected
+/// face to an existing face group and the user presses Done.
+pub fn tag_face_payload(media_key: &str, face_id: &str, person_id: &str) -> Value {
+    let mut options = vec![Value::Null; 20];
+    options.push(json!([]));
+    json!([
+        [null, media_key],
+        [[[face_id], [person_id]]],
+        [options],
+        [[], [null, null, [null, 1]]]
+    ])
+}
+/// Confirms that Google's updated record (`k9FTge` response `[0][0]`) links the
+/// face to the person. Anything else is an error, so a write is never assumed.
+pub fn confirm_face_tag(
+    data: &Value,
+    photo_id: &str,
+    face_id: &str,
+    person_id: &str,
+) -> Result<()> {
+    let record = field(field(data, 0), 0);
+    if field(record, 0).as_str() != Some(photo_id) {
+        bail!(
+            "Google's face-edit response did not describe this photo; check with 'gphotos inspect'"
+        );
+    }
+    let linked = field(field(record, 1), 22).as_array().is_some_and(|links| {
+        links.iter().any(|link| {
+            field(field(link, 0), 0).as_str() == Some(person_id)
+                && field(field(link, 1), 0).as_str() == Some(face_id)
+        })
+    });
+    if !linked {
+        bail!("Google accepted the request but did not report the face as tagged; check with 'gphotos inspect'");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -749,5 +921,94 @@ mod multi_person_tests {
         let values = rpc_batch_data(&body, "fDcn4b", 2).unwrap();
         assert_eq!(values, vec![json!(["first"]), json!(["second"])]);
         assert!(rpc_batch_data(&body, "fDcn4b", 3).is_err());
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    //! Fixtures are recorded web-client traffic with every ID, name, URL, and
+    //! timestamp replaced by synthetic values (see tests/fixtures).
+    use super::*;
+    const PHOTO: &str = "AF1QipSynthetic001xxxxxxxxxxxxxxxxxxxxxxx";
+    const PERSON: &str = "AF1QipSynthetic002xxxxxxxxxxxxxxxxxx";
+    const TAGGED_FACE: &str = "AF1QipSynthetic017xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    const UNTAGGED_FACE: &str = "AF1QipSynthetic019xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    fn ext() -> Value {
+        serde_json::from_str(include_str!("../tests/fixtures/fdcn4b_faces.json")).unwrap()
+    }
+
+    #[test]
+    fn lists_tagged_and_untagged_faces_left_to_right_with_boxes() {
+        let photo = parse_photo_faces(&ext(), PHOTO).unwrap();
+        assert_eq!(photo.media_key, "synthetic-media-key");
+        assert_eq!(photo.faces.len(), 2);
+        let (left, right) = (&photo.faces[0], &photo.faces[1]);
+        assert_eq!((left.index, left.face_id.as_str()), (0, UNTAGGED_FACE));
+        assert!(!left.tagged && left.person.is_none());
+        assert_eq!((right.index, right.face_id.as_str()), (1, TAGGED_FACE));
+        let person = right.person.as_ref().unwrap();
+        assert_eq!(
+            (person.id.as_str(), person.name.as_deref()),
+            (PERSON, Some("Alice Example"))
+        );
+        assert!((right.bbox.left - 0.5523203).abs() < 1e-9);
+        // 1099 x 1080 image
+        assert_eq!(
+            right.box_px,
+            Some(PixelBox {
+                x: 607,
+                y: 94,
+                width: 247,
+                height: 287
+            })
+        );
+    }
+
+    #[test]
+    fn internal_clusters_are_not_reported_as_people_and_missing_lists_are_unknown() {
+        let mut value = ext();
+        // Drop the face-group list: the face is still linked to clusters, but none
+        // of them is a face group, so it must read as untagged.
+        value[0][18] = Value::Null;
+        let photo = parse_photo_faces(&value, PHOTO).unwrap();
+        assert!(photo.faces.iter().all(|f| !f.tagged));
+        value[0][21] = Value::Null;
+        assert!(parse_photo_faces(&value, PHOTO).is_err());
+        assert!(parse_faces(&value[0], &[]).unwrap().is_none());
+        assert!(parse_photo_faces(&ext(), "AF1QipSomeOtherPhoto").is_err());
+    }
+
+    #[test]
+    fn inspection_includes_faces() {
+        let info = json!([[PHOTO]]);
+        let value = parse_inspection(&ext(), &info, PHOTO, 0).unwrap();
+        assert_eq!(value.faces_status, "available");
+        assert_eq!(value.faces.len(), 2);
+        assert_eq!(value.people.len(), 1);
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["faces"][1]["box"]["right"], json!(0.77707005));
+        assert_eq!(json["faces"][1]["person"]["name"], json!("Alice Example"));
+        assert_eq!(json["faces"][0]["tagged"], json!(false));
+    }
+
+    #[test]
+    fn tag_payload_matches_the_recorded_web_request() {
+        let recorded: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/k9ftge_request.json")).unwrap();
+        assert_eq!(
+            tag_face_payload("synthetic-media-key", TAGGED_FACE, PERSON),
+            recorded
+        );
+    }
+
+    #[test]
+    fn tag_response_must_link_the_face_to_the_person() {
+        let body = include_str!("../tests/fixtures/k9ftge_response.txt");
+        let data = rpc_data(body, "k9FTge").unwrap();
+        confirm_face_tag(&data, PHOTO, TAGGED_FACE, PERSON).unwrap();
+        assert!(confirm_face_tag(&data, PHOTO, UNTAGGED_FACE, PERSON).is_err());
+        assert!(confirm_face_tag(&data, PHOTO, TAGGED_FACE, "AF1QipOther").is_err());
+        assert!(confirm_face_tag(&data, "AF1QipOtherPhoto", TAGGED_FACE, PERSON).is_err());
+        assert!(confirm_face_tag(&json!([]), PHOTO, TAGGED_FACE, PERSON).is_err());
     }
 }

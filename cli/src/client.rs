@@ -353,6 +353,32 @@ impl PhotosClient {
         let info = self.rpc("VrseUb", json!([id, null, null, null, null]))?;
         protocol::parse_inspection(&ext, &info, id, self.session.account_index)
     }
+    pub fn photo_faces(&mut self, id: &str) -> Result<protocol::PhotoFaces> {
+        check_id(id)?;
+        let ext = self.rpc("fDcn4b", json!([id, 1, null, null, 1]))?;
+        protocol::parse_photo_faces(&ext, id)
+    }
+    /// Resolve exactly one existing face group for a write, by unique name or exact ID.
+    pub fn resolve_person(
+        &mut self,
+        name: Option<&str>,
+        id: Option<&str>,
+    ) -> Result<protocol::Person> {
+        let index = self.people()?;
+        resolve_tag_target(&index, name, id)
+    }
+    /// Assign a detected face to an existing face group (web "Edit faces" > Done).
+    /// The caller must have checked the face and person; this sends one write.
+    pub fn tag_face(
+        &mut self,
+        photo: &protocol::PhotoFaces,
+        face_id: &str,
+        person_id: &str,
+    ) -> Result<()> {
+        let payload = protocol::tag_face_payload(&photo.media_key, face_id, person_id);
+        let data = self.rpc("k9FTge", payload)?;
+        protocol::confirm_face_tag(&data, &photo.id, face_id, person_id)
+    }
     pub fn search(
         &mut self,
         query: &str,
@@ -809,6 +835,22 @@ fn resolve_people(
     Ok(resolved)
 }
 
+fn resolve_tag_target(
+    index: &[protocol::Person],
+    name: Option<&str>,
+    id: Option<&str>,
+) -> Result<protocol::Person> {
+    match (name, id) {
+        (Some(name), None) => Ok(resolve_people(index, &[name.to_owned()], &[])?.remove(0)),
+        (None, Some(id)) => {
+            check_id(id)?;
+            index.iter().find(|p| p.id == id).cloned().with_context(|| {
+                format!("No face group with ID {id:?}. Check 'gphotos people --include-unnamed'")
+            })
+        }
+        _ => bail!("Choose exactly one of --person NAME or --person-id ID"),
+    }
+}
 pub fn check_id(id: &str) -> Result<()> {
     if !(8..=256).contains(&id.len())
         || !id
@@ -1068,6 +1110,26 @@ mod people_resolution_tests {
                 name: Some("Bob Other".into()),
             },
         ]
+    }
+    #[test]
+    fn tag_targets_must_be_one_existing_group() {
+        let index = index();
+        assert_eq!(
+            resolve_tag_target(&index, Some("alice example"), None)
+                .unwrap()
+                .id,
+            index[0].id
+        );
+        let id = index[0].id.clone();
+        assert_eq!(
+            resolve_tag_target(&index, None, Some(&id)).unwrap().name,
+            index[0].name
+        );
+        assert!(resolve_tag_target(&index, None, Some("AF1QipNotAGroup")).is_err());
+        assert!(resolve_tag_target(&index, Some("Nobody"), None).is_err());
+        assert!(resolve_tag_target(&index, Some("Bob"), None).is_err());
+        assert!(resolve_tag_target(&index, None, None).is_err());
+        assert!(resolve_tag_target(&index, Some("x"), Some(&id)).is_err());
     }
     #[test]
     fn multiple_names_resolve_once_and_duplicate_constraints_are_removed() {

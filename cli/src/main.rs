@@ -28,6 +28,9 @@ ADVANCED SEARCH OPTIONS:
 PHOTO METADATA AND DOWNLOAD:
   gphotos inspect PHOTO_ID --json
   gphotos download PHOTO_ID --dir ./photos
+
+TAG A FACE (the only command that changes your library):
+  gphotos tag PHOTO_ID --face 0 --person \"Emma Example\" --dry-run
   gphotos help inspect
   gphotos help search
 
@@ -52,8 +55,8 @@ Repeated --person filters require ALL selected face-group IDs in the same photo.
 --sort selects relevant or recent results. --all raises paging and scan limits.
 Partial results have complete=false, stop_reason, and next_page_token.
 
-Unofficial project; not affiliated with Google. Read commands never modify
-Google Photos. Run 'gphotos help COMMAND' for full details.";
+Unofficial project; not affiliated with Google. Only 'gphotos tag' modifies
+Google Photos; every other command is read-only. Run 'gphotos help COMMAND' for full details.";
 
 #[derive(Parser)]
 #[command(name="gphotos", version, about="Search and download your Google Photos from the terminal", long_about="Unofficial Google Photos CLI. Reuse your Chrome session, search your existing library, and download full-size media. Portable cookie/session import supports macOS, Linux, and Windows. Direct Chrome import currently supports macOS.", after_help=EXAMPLES)]
@@ -127,7 +130,7 @@ candidates_checked, complete, stop_reason, and next_page_token.
     /// Show full available photo metadata: filename, camera/lens, coordinates, dates, caption, people
     #[command(
         alias = "get",
-        after_help = "EXAMPLES:\n  gphotos inspect PHOTO_ID\n  gphotos inspect PHOTO_ID --json\n  gphotos get PHOTO_ID --json\n\nJSON includes filename, caption (also description), taken_at and uploaded_at\nwith timezone, dimensions, file size, camera make/model, lens when supplied,\nfocal length, aperture, ISO, exposure time, latitude/longitude, location labels,\nGoogle-tagged people, albums, source and storage attributes. Missing fields\nremain null. people_status=not_returned does not mean nobody is in the image.\nThis is Google's available metadata, not a promise of every possible EXIF tag."
+        after_help = "EXAMPLES:\n  gphotos inspect PHOTO_ID\n  gphotos inspect PHOTO_ID --json\n  gphotos get PHOTO_ID --json\n\nJSON includes filename, caption (also description), taken_at and uploaded_at\nwith timezone, dimensions, file size, camera make/model, lens when supplied,\nfocal length, aperture, ISO, exposure time, latitude/longitude, location labels,\nGoogle-tagged people, every detected face (index, box, assigned face group),\nalbums, source and storage attributes. Missing fields\nremain null. people_status=not_returned does not mean nobody is in the image.\nFaces are indexed left to right; use the index with 'gphotos tag'.\nThis is Google's available metadata, not a promise of every possible EXIF tag."
     )]
     Inspect {
         id: String,
@@ -139,6 +142,25 @@ candidates_checked, complete, stop_reason, and next_page_token.
         after_help = "EXAMPLES:\n  gphotos download PHOTO_ID --dir ./photos\n  gphotos download PHOTO_ID --output ./vacation.jpg --json\n\nPrefers Google's original download URL; otherwise uses its full-size URL.\nJSON reports 'original' or 'full-size', byte count, SHA-256, and saved path.\nNever downloads a thumbnail or overwrites an existing file.\nGoogle's stored version may differ from the file originally uploaded if\nStorage Saver was used. Live Photo motion components are not exported separately."
     )]
     Download(DownloadArgs),
+    /// Tag a detected face in a photo with an existing named person (writes to your library)
+    #[command(after_help = r#"EXAMPLES:
+  gphotos inspect PHOTO_ID                 # list faces: index, box, tagged person
+  gphotos tag PHOTO_ID --face 1 --person "Emma Example" --dry-run
+  gphotos tag PHOTO_ID --face 1 --person "Emma Example"
+  gphotos tag PHOTO_ID --face-id FACE_ID --person-id GROUP_ID --json
+
+Assigns one detected face to an existing face group, like Info > People >
+Edit faces > Add > (person) > Done on photos.google.com. --face is the index
+shown by 'gphotos inspect' (faces sorted left to right); --face-id is the
+stable face_id from 'inspect --json'.
+
+--person must match exactly one named face group (full or unique partial name,
+same rules as 'search --person'); --person-id must be an ID from 'gphotos people'.
+A face that is already tagged is refused unless --force; a face already tagged
+with the same person is left unchanged. New people cannot be created here.
+--dry-run prints the exact request without sending it. Nothing is retried
+automatically, and the change is confirmed from Google's response."#)]
+    Tag(TagArgs),
     /// Remove the CLI's saved session (does not sign Chrome out)
     Logout,
 }
@@ -243,6 +265,126 @@ struct DownloadArgs {
     dir: Option<PathBuf>,
     #[arg(long)]
     json: bool,
+}
+#[derive(Args)]
+#[command(group = clap::ArgGroup::new("target_face").required(true).args(["face", "face_id"]))]
+#[command(group = clap::ArgGroup::new("target_person").required(true).args(["person", "person_id"]))]
+struct TagArgs {
+    /// Photo/media ID from gphotos search
+    id: String,
+    /// Face index from 'gphotos inspect' (0 = leftmost face)
+    #[arg(long)]
+    face: Option<usize>,
+    /// Exact face_id from 'gphotos inspect --json'
+    #[arg(long)]
+    face_id: Option<String>,
+    /// Existing named person (unique full or partial face-group name)
+    #[arg(long)]
+    person: Option<String>,
+    /// Exact face-group ID from 'gphotos people'
+    #[arg(long)]
+    person_id: Option<String>,
+    /// Replace an existing tag on that face
+    #[arg(long)]
+    force: bool,
+    /// Print the request that would be sent; change nothing
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+fn run_tag(client: &mut PhotosClient, args: &TagArgs) -> Result<()> {
+    let photo = client.photo_faces(&args.id)?;
+    let face = match (&args.face, &args.face_id) {
+        (Some(n), _) => photo.faces.get(*n).with_context(|| {
+            format!(
+                "Photo has {} detected face(s); --face must be below that. Run 'gphotos inspect {}'",
+                photo.faces.len(),
+                args.id
+            )
+        })?,
+        (None, Some(face_id)) => photo
+            .faces
+            .iter()
+            .find(|f| f.face_id == *face_id)
+            .with_context(|| {
+                format!(
+                    "No detected face {face_id:?} in this photo. Run 'gphotos inspect {} --json'",
+                    args.id
+                )
+            })?,
+        (None, None) => bail!("Choose --face N or --face-id ID"),
+    };
+    let person = client.resolve_person(args.person.as_deref(), args.person_id.as_deref())?;
+    let label = |p: &google_photos_cli::protocol::Person| {
+        p.name
+            .clone()
+            .unwrap_or_else(|| format!("unnamed face group {}", p.id))
+    };
+    let status = match &face.person {
+        Some(current) if current.id == person.id => "already_tagged",
+        Some(current) if !args.force => bail!(
+            "Face {} is already tagged as {}. Re-run with --force to replace it",
+            face.index,
+            label(current)
+        ),
+        _ if args.dry_run => "dry_run",
+        _ => "tagged",
+    };
+    let payload =
+        google_photos_cli::protocol::tag_face_payload(&photo.media_key, &face.face_id, &person.id);
+    if status == "tagged" {
+        eprintln!(
+            "Tagging face {} in {} as {}…",
+            face.index,
+            photo.filename.as_deref().unwrap_or(&photo.id),
+            label(&person)
+        );
+        client.tag_face(&photo, &face.face_id, &person.id)?;
+    }
+    if args.json {
+        let mut value = serde_json::json!({
+            "status": status,
+            "photo_id": photo.id,
+            "filename": photo.filename,
+            "face": face,
+            "person": person,
+            "previous_person": face.person,
+        });
+        if status == "dry_run" {
+            value["request"] = serde_json::json!({"rpcid": "k9FTge", "payload": payload});
+        }
+        print_json(&value)?;
+        return Ok(());
+    }
+    match status {
+        "already_tagged" => println!(
+            "Face {} is already tagged as {}; nothing changed.",
+            face.index,
+            label(&person)
+        ),
+        "dry_run" => {
+            println!(
+                "Dry run: would tag face {} ({}) as {} ({}).",
+                face.index,
+                face.face_id,
+                label(&person),
+                person.id
+            );
+            if let Some(current) = &face.person {
+                println!("This replaces the current tag: {}.", label(current));
+            }
+            println!("RPC: k9FTge");
+            println!("f.req payload: {payload}");
+        }
+        _ => println!(
+            "Tagged face {} as {}. Check with 'gphotos inspect {}'.",
+            face.index,
+            label(&person),
+            photo.id
+        ),
+    }
+    Ok(())
 }
 fn print_json(value: &impl serde::Serialize) -> Result<()> {
     use std::io::Write;
@@ -553,6 +695,10 @@ fn run(cli: Cli) -> Result<()> {
                 Ok(())
             })?;
         }
+        Command::Tag(args) => {
+            client::check_id(&args.id)?;
+            with_saved(|client| run_tag(client, &args))?;
+        }
         Command::Download(args) => {
             client::check_id(&args.id)?;
             with_saved(|client| {
@@ -645,6 +791,33 @@ fn print_inspection(info: &google_photos_cli::protocol::Inspection) {
         );
     } else {
         println!("Tagged people: unavailable (Google returned no face-group metadata)");
+    }
+    if info.faces_status == "available" {
+        if info.faces.is_empty() {
+            println!("Faces: none detected");
+        } else {
+            println!("Faces (left to right; use the index with 'gphotos tag'):");
+            for face in &info.faces {
+                let place = match &face.box_px {
+                    Some(b) => format!("x={} y={} {}×{} px", b.x, b.y, b.width, b.height),
+                    None => format!(
+                        "left={:.3} top={:.3} right={:.3} bottom={:.3}",
+                        face.bbox.left, face.bbox.top, face.bbox.right, face.bbox.bottom
+                    ),
+                };
+                let who = match &face.person {
+                    Some(p) => format!(
+                        "{} ({})",
+                        p.name.as_deref().unwrap_or("unnamed face group"),
+                        p.id
+                    ),
+                    None => "untagged".into(),
+                };
+                println!("  [{}] {place}  {who}", face.index);
+            }
+        }
+    } else {
+        println!("Faces: unavailable (Google returned no face list)");
     }
     if let Some(description) = &info.description {
         println!("Caption: {description}");
