@@ -723,7 +723,7 @@ pub fn confirm_face_tag(
     let record = field(field(data, 0), 0);
     if field(record, 0).as_str() != Some(photo_id) {
         bail!(
-            "Google's face-edit response did not describe this photo; check with 'gphotos inspect'"
+            "Google's face-edit response did not describe this photo; check with 'google-photos-web-cli inspect'"
         );
     }
     let linked = field(field(record, 1), 22).as_array().is_some_and(|links| {
@@ -733,7 +733,7 @@ pub fn confirm_face_tag(
         })
     });
     if !linked {
-        bail!("Google accepted the request but did not report the face as tagged; check with 'gphotos inspect'");
+        bail!("Google accepted the request but did not report the face as tagged; check with 'google-photos-web-cli inspect'");
     }
     Ok(())
 }

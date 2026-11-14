@@ -2,7 +2,7 @@ use assert_cmd::Command;
 
 #[test]
 fn help_explains_auth_search_download_and_refresh_without_authenticating() {
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("gphotos"))
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("google-photos-web-cli"))
         .arg("--help")
         .output()
         .unwrap();
@@ -23,7 +23,8 @@ fn help_explains_auth_search_download_and_refresh_without_authenticating() {
         assert!(text.contains(phrase), "missing {phrase}");
     }
     assert!(
-        text.find("gphotos search \"birthday cake\"").unwrap()
+        text.find("google-photos-web-cli search \"birthday cake\"")
+            .unwrap()
             < text.find("ADVANCED SEARCH OPTIONS:").unwrap()
     );
     for command in [
@@ -36,7 +37,7 @@ fn help_explains_auth_search_download_and_refresh_without_authenticating() {
         vec!["auth", "export", "--help"],
         vec!["auth", "import", "--help"],
     ] {
-        Command::new(assert_cmd::cargo::cargo_bin!("gphotos"))
+        Command::new(assert_cmd::cargo::cargo_bin!("google-photos-web-cli"))
             .args(command)
             .assert()
             .success();
@@ -74,7 +75,7 @@ fn invalid_inputs_fail_before_accessing_keychain() {
         ],
         vec!["auth", "export"],
     ] {
-        Command::new(assert_cmd::cargo::cargo_bin!("gphotos"))
+        Command::new(assert_cmd::cargo::cargo_bin!("google-photos-web-cli"))
             .args(args)
             .assert()
             .failure();
@@ -89,7 +90,7 @@ fn detailed_help_documents_filters_pagination_metadata_and_session_refresh() {
             vec![
                 "Advanced filters:",
                 "ADVANCED SEARCH OPTIONS:",
-                "gphotos search \"birthday cake\"",
+                "google-photos-web-cli search \"birthday cake\"",
                 "--page-token",
                 "--sort",
                 "An incomplete search reports why it stopped and how to resume",
@@ -118,7 +119,7 @@ fn detailed_help_documents_filters_pagination_metadata_and_session_refresh() {
                 "--person-id",
                 "--face-id",
                 "already tagged",
-                "gphotos inspect",
+                "google-photos-web-cli inspect",
             ],
         ),
         (
@@ -131,7 +132,7 @@ fn detailed_help_documents_filters_pagination_metadata_and_session_refresh() {
             ],
         ),
     ] {
-        let out = Command::new(assert_cmd::cargo::cargo_bin!("gphotos"))
+        let out = Command::new(assert_cmd::cargo::cargo_bin!("google-photos-web-cli"))
             .args(args)
             .output()
             .unwrap();

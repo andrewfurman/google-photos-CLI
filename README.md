@@ -1,8 +1,8 @@
-# google-photos-CLI
+# google-photos-web-cli
 
 An unofficial **Rust CLI for Google Photos**. Search your library the way you would in Google Photos,
 inspect camera/location/people metadata and every detected face, tag an untagged face with an existing
-person, and download full-size photos and videos. The command is `gphotos`.
+person, and download full-size photos and videos. The command is `google-photos-web-cli`.
 
 **macOS, Linux, and Windows** support portable session and cookie-file imports.
 Direct import from Chrome's encrypted cookie database is currently macOS-only.
@@ -10,13 +10,17 @@ The project is not affiliated with or endorsed by Google.
 
 ## Install
 
+> Renamed in v0.5.0: the repo was `google-photos-CLI` and the command was `gphotos`. Sessions saved in
+> `~/.config/gphotos/.env` are still found, and `GPHOTOS_SESSION` / `GPHOTOS_SESSION_FILE` keep their names.
+> New sessions are saved in `~/.config/google-photos-web-cli/.env` (the platform config directory).
+
 Install a current stable Rust toolchain from [rustup.rs](https://rustup.rs/), then:
 
 ```bash
-cargo install --locked --git https://github.com/andrewfurman/google-photos-CLI
+cargo install --locked --git https://github.com/andrewfurman/google-photos-web-cli
 ```
 
-Cargo places `gphotos` in `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` on Windows).
+Cargo places `google-photos-web-cli` in `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` on Windows).
 Add that directory to your PATH if needed. From a checkout:
 
 ```bash
@@ -32,7 +36,7 @@ Choose one method. No Google Cloud project, API key, or Google password is neede
 Sign in at [Google Photos](https://photos.google.com/) in Chrome, then:
 
 ```bash
-gphotos auth chrome
+google-photos-web-cli auth chrome
 ```
 
 macOS may ask for **Chrome Safe Storage** access to decrypt the browser cookies.
@@ -42,7 +46,7 @@ The validated session is saved in a private `.env` file.
 For a different Chrome profile or Google account:
 
 ```bash
-gphotos auth chrome --profile "Profile 1" --account 1
+google-photos-web-cli auth chrome --profile "Profile 1" --account 1
 ```
 
 `--profile` is the Chrome profile directory shown at `chrome://version`.
@@ -54,7 +58,7 @@ Export your own Google Photos cookies in the **Netscape `cookies.txt` format**
 using a browser tool you trust, then:
 
 ```bash
-gphotos auth cookies /path/to/cookies.txt
+google-photos-web-cli auth cookies /path/to/cookies.txt
 ```
 
 This works on macOS, Linux, and Windows. Only unexpired cookies applicable to
@@ -67,14 +71,14 @@ cases; the CLI reports authentication failure rather than bypassing protections.
 After authenticating on one machine:
 
 ```bash
-gphotos auth export --output session.env
+google-photos-web-cli auth export --output session.env
 ```
 
-Copy that file securely to your other machine, install `gphotos`, and run:
+Copy that file securely to your other machine, install `google-photos-web-cli`, and run:
 
 ```bash
-gphotos auth import /path/to/session.env
-gphotos auth status
+google-photos-web-cli auth import /path/to/session.env
+google-photos-web-cli auth status
 ```
 
 The file has **one value**:
@@ -90,37 +94,37 @@ after a change of machine or IP address. A copied session is not guaranteed to
 work forever or on every machine. The CLI fetches its current request token from
 Google Photos when it connects.
 
-For quick clipboard copying, `gphotos auth export --token` prints only the value:
+For quick clipboard copying, `google-photos-web-cli auth export --token` prints only the value:
 
 ```bash
 # macOS; on Linux use wl-copy/xclip, or on Windows use clip/Set-Clipboard
-gphotos auth export --token | pbcopy
+google-photos-web-cli auth export --token | pbcopy
 ```
 
-A file containing just that value can also be imported with `gphotos auth import`.
+A file containing just that value can also be imported with `google-photos-web-cli auth import`.
 Normal commands never print the value. Avoid sharing it in issues or shell history.
 
 ## Search, inspect, and download
 
-Pass a single phrase to `gphotos search`, just like typing into the Google Photos
+Pass a single phrase to `google-photos-web-cli search`, just like typing into the Google Photos
 search bar. Use names, places, dates, objects, or a mix of them.
 
 ```bash
-gphotos search "birthday cake"
-gphotos search "Philadelphia October 2026"
-gphotos search "Emma and Lucy at the beach"
+google-photos-web-cli search "birthday cake"
+google-photos-web-cli search "Philadelphia October 2026"
+google-photos-web-cli search "Emma and Lucy at the beach"
 ```
 
 Use a photo ID from the results to inspect its metadata or download it:
 
 ```bash
-gphotos inspect PHOTO_ID
-gphotos inspect PHOTO_ID --json
-gphotos download PHOTO_ID --dir ./photos
-gphotos download PHOTO_ID --output ./exact-filename.jpg --json
+google-photos-web-cli inspect PHOTO_ID
+google-photos-web-cli inspect PHOTO_ID --json
+google-photos-web-cli download PHOTO_ID --dir ./photos
+google-photos-web-cli download PHOTO_ID --output ./exact-filename.jpg --json
 
 # Download each displayed search result
-gphotos search "Paris 2025" --limit 10 --download ./photos
+google-photos-web-cli search "Paris 2025" --limit 10 --download ./photos
 ```
 
 ## Advanced search options
@@ -132,8 +136,8 @@ place name, expand "Philly" itself, or run its own image-content classifier.
 For clearer scripts, these flags add text to the same Google query:
 
 ```bash
-gphotos search --location "Philadelphia, Pennsylvania"
-gphotos search --location Philly --tag "birthday cake"
+google-photos-web-cli search --location "Philadelphia, Pennsylvania"
+google-photos-web-cli search --location Philly --tag "birthday cake"
 ```
 
 `--tag` means a content/tag **search phrase**, not a separate Google custom-tag
@@ -145,12 +149,12 @@ with the other query text. `--location` is not a strict GPS boundary filter.
 `--person` resolves a unique full or partial name from Google's **People & Pets
 face groups**. Repeat it for **AND**, not OR: every selected person must be tagged
 in each returned photo. Example people below are placeholders; use the names
-shown by `gphotos people` for your own library.
+shown by `google-photos-web-cli people` for your own library.
 
 ```bash
-gphotos people --name Emma
-gphotos search --person "Emma Example" --person "Lucy Example" --all --limit 500
-gphotos search beach --person "Emma Example" --person "Lucy Example" --all
+google-photos-web-cli people --name Emma
+google-photos-web-cli search --person "Emma Example" --person "Lucy Example" --all --limit 500
+google-photos-web-cli search beach --person "Emma Example" --person "Lucy Example" --all
 ```
 
 Ambiguous names produce an error instead of choosing someone silently. Use the
@@ -171,9 +175,9 @@ are inferred from image recognition, filenames, captions, or photo ownership.
 Date phrases can be part of the browser-style query. For exact inclusive bounds:
 
 ```bash
-gphotos search --from 2026-10-01 --to 2026-10-31 --all
-gphotos search Philly --from 2026-01-01 --to 2026-12-31 --all
-gphotos search --person "Emma Example" --person "Lucy Example" --from 2026-10-01 --to 2026-10-31 --all
+google-photos-web-cli search --from 2026-10-01 --to 2026-10-31 --all
+google-photos-web-cli search Philly --from 2026-01-01 --to 2026-12-31 --all
+google-photos-web-cli search --person "Emma Example" --person "Lucy Example" --from 2026-10-01 --to 2026-10-31 --all
 ```
 
 Bounds must be valid `YYYY-MM-DD` dates, with `--from` on or before `--to`. The CLI
@@ -190,7 +194,7 @@ are strict checks; text/place/content interpretation remains Google's.
 
 ### Photo metadata
 
-`gphotos inspect PHOTO_ID --json` returns the metadata exposed by the web API:
+`google-photos-web-cli inspect PHOTO_ID --json` returns the metadata exposed by the web API:
 
 - Filename, caption (`caption`, also preserved as `description`), capture/upload date/time with timezone, dimensions, file size, and media type.
 - Camera manufacturer/model, lens when available, focal length, aperture, ISO, and exposure time.
@@ -207,19 +211,19 @@ A location may have been estimated or edited in Google Photos.
 
 ### Tag a face with an existing person
 
-`gphotos tag` is the only command that changes your library. It assigns one
+`google-photos-web-cli tag` is the only command that changes your library. It assigns one
 detected face to an existing face group, the same edit as Info → People → Edit
 faces → Add → person → Done on photos.google.com.
 
 ```bash
-gphotos inspect PHOTO_ID                                   # faces: [index] box  person|untagged
-gphotos tag PHOTO_ID --face 0 --person "Emma Example" --dry-run
-gphotos tag PHOTO_ID --face 0 --person "Emma Example"
-gphotos tag PHOTO_ID --face-id FACE_ID --person-id GROUP_ID --json
+google-photos-web-cli inspect PHOTO_ID                                   # faces: [index] box  person|untagged
+google-photos-web-cli tag PHOTO_ID --face 0 --person "Emma Example" --dry-run
+google-photos-web-cli tag PHOTO_ID --face 0 --person "Emma Example"
+google-photos-web-cli tag PHOTO_ID --face-id FACE_ID --person-id GROUP_ID --json
 ```
 
 - `--person` must match exactly one named face group (same rules as `search --person`);
-  ambiguous or unknown names fail. `--person-id` must be a group ID from `gphotos people`.
+  ambiguous or unknown names fail. `--person-id` must be a group ID from `google-photos-web-cli people`.
 - A face that is already tagged is refused unless `--force`; one already tagged with
   the same person is left alone. New people cannot be created or named here.
 - `--dry-run` prints the exact request (`k9FTge` payload) and sends nothing.
@@ -229,15 +233,15 @@ gphotos tag PHOTO_ID --face-id FACE_ID --person-id GROUP_ID --json
 
 ```bash
 # Fetch a page, then use its next_page_token with the identical filters
-gphotos search "birthday cake" --limit 100 --json
-gphotos search "birthday cake" --limit 100 --json --page-token TOKEN
+google-photos-web-cli search "birthday cake" --limit 100 --json
+google-photos-web-cli search "birthday cake" --limit 100 --json --page-token TOKEN
 
 # Follow pages automatically; suitable for hundreds of matching photos
-gphotos search --person "Emma Example" --person "Lucy Example" --all --limit 500 --json
+google-photos-web-cli search --person "Emma Example" --person "Lucy Example" --all --limit 500 --json
 
 # Allow a longer run, or continue an interrupted/limited bulk search
-gphotos search --location Philly --all --limit 1000 --max-seconds 300 --json
-gphotos search --location Philly --all --limit 1000 --max-seconds 300 --json --page-token TOKEN
+google-photos-web-cli search --location Philly --all --limit 1000 --max-seconds 300 --json
+google-photos-web-cli search --location Philly --all --limit 1000 --max-seconds 300 --json --page-token TOKEN
 ```
 
 Without `--all`, the default is 20 matches, at most 50 pages, and up to 100
@@ -295,9 +299,9 @@ The default saved session file is:
 
 | Platform | Location |
 | --- | --- |
-| macOS | `~/Library/Application Support/gphotos/.env` |
-| Linux | `$XDG_CONFIG_HOME/gphotos/.env`, or `~/.config/gphotos/.env` |
-| Windows | `%APPDATA%\gphotos\.env` |
+| macOS | `~/Library/Application Support/google-photos-web-cli/.env` |
+| Linux | `$XDG_CONFIG_HOME/google-photos-web-cli/.env`, or `~/.config/google-photos-web-cli/.env` |
+| Windows | `%APPDATA%\google-photos-web-cli\.env` |
 
 Unix files are created with mode `0600`; Windows exports restrict the file ACL
 to the current user. These files contain credentials in plaintext and should be
@@ -309,9 +313,9 @@ To keep an ignored `.env` beside your checkout instead:
 
 ```bash
 cp sample.env .env
-gphotos --session-file .env auth chrome  # macOS
-# Or: gphotos --session-file .env auth cookies /path/to/cookies.txt
-gphotos --session-file .env search "birthday cake"
+google-photos-web-cli --session-file .env auth chrome  # macOS
+# Or: google-photos-web-cli --session-file .env auth cookies /path/to/cookies.txt
+google-photos-web-cli --session-file .env search "birthday cake"
 ```
 
 Use `--session-file PATH` for each command, or set `GPHOTOS_SESSION_FILE` once in
@@ -326,36 +330,36 @@ There is **no reliable single lifetime** for `GPHOTOS_SESSION`. It packages cook
 with different expiry rules, and Google can expire or revoke access earlier than
 any listed cookie expiry. It is not a permanent API token. This browser-session
 method has no supported OAuth refresh token or guaranteed renewal endpoint.
-`gphotos auth status` checks current usability rather than promising a future
+`google-photos-web-cli auth status` checks current usability rather than promising a future
 expiry date.
 
-On macOS, a search can refresh a session saved by `gphotos auth chrome`. It
+On macOS, a search can refresh a session saved by `google-photos-web-cli auth chrome`. It
 tries once when Google reports an authentication failure, using the saved Chrome
 profile and verifying the Google account before saving. Chrome must still be
 signed in, and macOS may prompt for Chrome Safe Storage access. Run
-`gphotos auth chrome` once after upgrading to enable this for an older session.
+`google-photos-web-cli auth chrome` once after upgrading to enable this for an older session.
 Cookie-file imports, portable imports, and sessions supplied via the environment
 use manual refresh.
 
 If automatic refresh is unavailable or fails:
 
 1. Open Google Photos in your browser and sign in or complete Google's verification.
-2. Import fresh cookies: `gphotos auth chrome` on macOS, or `gphotos auth cookies FILE` on any supported platform.
-3. Run `gphotos auth status` to verify access.
-4. Export a new file with `gphotos auth export --output new-session.env`; import it on the other machine with `gphotos auth import new-session.env`.
+2. Import fresh cookies: `google-photos-web-cli auth chrome` on macOS, or `google-photos-web-cli auth cookies FILE` on any supported platform.
+3. Run `google-photos-web-cli auth status` to verify access.
+4. Export a new file with `google-photos-web-cli auth export --output new-session.env`; import it on the other machine with `google-photos-web-cli auth import new-session.env`.
 
 Normal file-based commands persist cookie updates. No browser keepalive runs in
 the background. Browser activity does not guarantee an imported copy stays valid.
 If it expires, sign in in your browser and import fresh cookies/session data.
 
 ```bash
-gphotos auth status
-gphotos logout
+google-photos-web-cli auth status
+google-photos-web-cli logout
 ```
 
 Logout clears the selected local session file; it does not revoke exported copies
 or sign your browser out. Unset `GPHOTOS_SESSION` too if you supplied it in your shell.
-For users upgrading from version 0.1, `gphotos auth migrate-keychain` performs a
+For users upgrading from version 0.1, `google-photos-web-cli auth migrate-keychain` performs a
 one-time macOS Keychain import. Search uses Chrome Safe Storage only when
 refreshing an expired local Chrome session.
 
@@ -364,12 +368,12 @@ refreshing an expired local Chrome session.
 Help works offline and never reads session credentials.
 
 ```bash
-gphotos help
-gphotos help search
-gphotos help inspect
-gphotos help tag
-gphotos help auth export
-gphotos help auth import
+google-photos-web-cli help
+google-photos-web-cli help search
+google-photos-web-cli help inspect
+google-photos-web-cli help tag
+google-photos-web-cli help auth export
+google-photos-web-cli help auth import
 ```
 
 | Command | Purpose |
@@ -397,7 +401,7 @@ change it without notice. Automated access may be restricted under
 
 - **Authentication expired:** sign in in your browser and import again. A portable bundle is not a permanent API token.
 - **Chrome import fails:** check profile, macOS file permissions, and Chrome Safe Storage permission. Linux/Windows users should import a cookie file or exported session instead.
-- **Person not found:** check `gphotos people --name NAME` and Google's face grouping. Only groups returned by Google can be resolved by name; use a known `--person-id` if necessary.
+- **Person not found:** check `google-photos-web-cli people --name NAME` and Google's face grouping. Only groups returned by Google can be resolved by name; use a known `--person-id` if necessary.
 - **Metadata missing:** inspect reports null/unknown instead of inferring values.
 - **Search rate limits:** the CLI retries HTTP 429 and RPC code 8 within the search time budget. It uses Google’s `Retry-After` when available and exponential backoff otherwise.
 - **Destination exists:** choose another output filename; existing data is preserved.

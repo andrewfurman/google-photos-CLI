@@ -52,7 +52,7 @@ impl Session {
     }
     pub fn from_token(token: &str) -> Result<Self> {
         let invalid = || {
-            anyhow!("Invalid GPHOTOS_SESSION value. Use a session exported by 'gphotos auth export', or import a Netscape cookie file")
+            anyhow!("Invalid GPHOTOS_SESSION value. Use a session exported by 'google-photos-web-cli auth export', or import a Netscape cookie file")
         };
         let token = token.trim().strip_prefix(PREFIX).ok_or_else(invalid)?;
         if token.len() > 1024 * 1024 {
@@ -117,16 +117,21 @@ pub fn session_path() -> Result<PathBuf> {
         }
         return Ok(path.into());
     }
-    Ok(dirs::config_dir()
-        .context("Cannot locate your configuration directory; use --session-file PATH")?
-        .join("gphotos")
-        .join(".env"))
+    let config = dirs::config_dir()
+        .context("Cannot locate your configuration directory; use --session-file PATH")?;
+    let path = config.join("google-photos-web-cli").join(".env");
+    // Sessions saved before the rename (when the command was `gphotos`) keep working.
+    let legacy = config.join("gphotos").join(".env");
+    if !path.exists() && legacy.exists() {
+        return Ok(legacy);
+    }
+    Ok(path)
 }
 fn read_session(path: &Path) -> Result<Session> {
     if path.to_string_lossy().starts_with(PREFIX) {
         bail!("Pass a session file path, not the session value as a command argument");
     }
-    let text = std::fs::read_to_string(path).with_context(|| format!("Cannot read session file {}. Run 'gphotos auth chrome', 'gphotos auth cookies FILE', or 'gphotos auth import FILE'",path.display()))?;
+    let text = std::fs::read_to_string(path).with_context(|| format!("Cannot read session file {}. Run 'google-photos-web-cli auth chrome', 'google-photos-web-cli auth cookies FILE', or 'google-photos-web-cli auth import FILE'",path.display()))?;
     if text.trim().starts_with(PREFIX) {
         return Session::from_token(text.trim());
     }
@@ -373,7 +378,7 @@ pub fn import_chrome(profile: &str) -> Result<CookieStore> {
         .parse()
         .context("Unknown Chrome cookies database version")?;
     let secret = generic_password(PasswordOptions::new_generic_password("Chrome Safe Storage", "Chrome"))
-        .context("Chrome Safe Storage access denied or unavailable. Allow access in the macOS Keychain prompt, or use 'gphotos auth cookies FILE'")?;
+        .context("Chrome Safe Storage access denied or unavailable. Allow access in the macOS Keychain prompt, or use 'google-photos-web-cli auth cookies FILE'")?;
     let mut key = [0u8; 16];
     pbkdf2::pbkdf2_hmac::<sha1::Sha1>(&secret, b"saltysalt", 1003, &mut key);
     let mut stmt = db.prepare("SELECT host_key, path, name, value, encrypted_value, is_secure, expires_utc FROM cookies WHERE host_key IN ('.google.com','google.com','.photos.google.com','photos.google.com')")?;
@@ -429,7 +434,7 @@ pub fn import_chrome(_: &str) -> Result<CookieStore> {
 fn decrypt(data: &[u8], key: &[u8; 16]) -> Result<Vec<u8>> {
     use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
     if !data.starts_with(b"v10") {
-        bail!("Unsupported Chrome cookie encryption. Use 'gphotos auth cookies FILE' instead");
+        bail!("Unsupported Chrome cookie encryption. Use 'google-photos-web-cli auth cookies FILE' instead");
     }
     cbc::Decryptor::<aes::Aes128>::new(key.into(), (&[b' '; 16]).into())
         .decrypt_padded_vec_mut::<Pkcs7>(&data[3..])
