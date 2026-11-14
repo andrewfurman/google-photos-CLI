@@ -561,8 +561,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "google-photos-cli"
-version = "0.4.0"
+name = "google-photos-web-cli"
+version = "0.5.0"
 dependencies = [
  "aes",
  "anyhow",

@@ -813,8 +813,8 @@ fn resolve_people(
         };
         match matches.as_slice(){
             [person]=>resolved.push((*person).clone()),
-            []=>bail!("No named face group matches {name:?}. Check 'gphotos people --name NAME'"),
-            _=>bail!("More than one face group matches {name:?}. Use the full name or --person-id from 'gphotos people --name NAME'"),
+            []=>bail!("No named face group matches {name:?}. Check 'google-photos-web-cli people --name NAME'"),
+            _=>bail!("More than one face group matches {name:?}. Use the full name or --person-id from 'google-photos-web-cli people --name NAME'"),
         }
     }
     for id in ids {
@@ -845,7 +845,7 @@ fn resolve_tag_target(
         (None, Some(id)) => {
             check_id(id)?;
             index.iter().find(|p| p.id == id).cloned().with_context(|| {
-                format!("No face group with ID {id:?}. Check 'gphotos people --include-unnamed'")
+                format!("No face group with ID {id:?}. Check 'google-photos-web-cli people --include-unnamed'")
             })
         }
         _ => bail!("Choose exactly one of --person NAME or --person-id ID"),
@@ -857,7 +857,7 @@ pub fn check_id(id: &str) -> Result<()> {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
     {
-        bail!("Expected a Google Photos photo ID from 'gphotos search', containing letters, digits, '-' or '_'");
+        bail!("Expected a Google Photos photo ID from 'google-photos-web-cli search', containing letters, digits, '-' or '_'");
     }
     Ok(())
 }

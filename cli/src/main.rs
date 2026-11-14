@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
-use google_photos_cli::{
+use google_photos_web_cli::{
     auth::{self, Session},
     client::{self, PhotosClient, SearchOptions, SearchSort},
     protocol::SessionExpired,
@@ -8,37 +8,37 @@ use google_photos_cli::{
 use std::path::PathBuf;
 
 const EXAMPLES: &str = "GET STARTED:
-  macOS Chrome:   gphotos auth chrome
-  Any platform:   gphotos auth cookies /path/to/cookies.txt
-  Other machine:  gphotos auth import /path/to/session.env
+  macOS Chrome:   google-photos-web-cli auth chrome
+  Any platform:   google-photos-web-cli auth cookies /path/to/cookies.txt
+  Other machine:  google-photos-web-cli auth import /path/to/session.env
 
 SEARCH LIKE GOOGLE PHOTOS:
-  gphotos search \"birthday cake\"
-  gphotos search \"Philadelphia October 2026\"
-  gphotos search \"Emma and Lucy at the beach\"
+  google-photos-web-cli search \"birthday cake\"
+  google-photos-web-cli search \"Philadelphia October 2026\"
+  google-photos-web-cli search \"Emma and Lucy at the beach\"
 
 Enter one phrase with names, places, dates, or objects. Google interprets it
-like a search in the browser. Run 'gphotos help search' for more options.
+like a search in the browser. Run 'google-photos-web-cli help search' for more options.
 
 ADVANCED SEARCH OPTIONS:
-  gphotos search --person \"Emma Example\" --person \"Lucy Example\"
-  gphotos search --from 2026-10-01 --to 2026-10-31
-  gphotos search \"birthday cake\" --all --limit 100 --json
+  google-photos-web-cli search --person \"Emma Example\" --person \"Lucy Example\"
+  google-photos-web-cli search --from 2026-10-01 --to 2026-10-31
+  google-photos-web-cli search \"birthday cake\" --all --limit 100 --json
 
 PHOTO METADATA AND DOWNLOAD:
-  gphotos inspect PHOTO_ID --json
-  gphotos download PHOTO_ID --dir ./photos
+  google-photos-web-cli inspect PHOTO_ID --json
+  google-photos-web-cli download PHOTO_ID --dir ./photos
 
 TAG A FACE (the only command that changes your library):
-  gphotos tag PHOTO_ID --face 0 --person \"Emma Example\" --dry-run
-  gphotos help inspect
-  gphotos help search
+  google-photos-web-cli tag PHOTO_ID --face 0 --person \"Emma Example\" --dry-run
+  google-photos-web-cli help inspect
+  google-photos-web-cli help search
 
 PORTABLE AUTHENTICATION:
-  gphotos auth export --output session.env
-  gphotos auth import session.env
-  gphotos auth status
-  gphotos help auth
+  google-photos-web-cli auth export --output session.env
+  google-photos-web-cli auth import session.env
+  google-photos-web-cli auth status
+  google-photos-web-cli help auth
 
 One GPHOTOS_SESSION value stores the cookie bundle in a private .env file.
 Searches can reimport an expired local Chrome session on macOS.
@@ -55,13 +55,13 @@ Repeated --person filters require ALL selected face-group IDs in the same photo.
 --sort selects relevant or recent results. --all raises paging and scan limits.
 Partial results have complete=false, stop_reason, and next_page_token.
 
-Unofficial project; not affiliated with Google. Only 'gphotos tag' modifies
-Google Photos; every other command is read-only. Run 'gphotos help COMMAND' for full details.";
+Unofficial project; not affiliated with Google. Only 'google-photos-web-cli tag' modifies
+Google Photos; every other command is read-only. Run 'google-photos-web-cli help COMMAND' for full details.";
 
 #[derive(Parser)]
-#[command(name="gphotos", version, about="Search and download your Google Photos from the terminal", long_about="Unofficial Google Photos CLI. Reuse your Chrome session, search your existing library, and download full-size media. Portable cookie/session import supports macOS, Linux, and Windows. Direct Chrome import currently supports macOS.", after_help=EXAMPLES)]
+#[command(name="google-photos-web-cli", version, about="Search and download your Google Photos from the terminal", long_about="Unofficial Google Photos CLI. Reuse your Chrome session, search your existing library, and download full-size media. Portable cookie/session import supports macOS, Linux, and Windows. Direct Chrome import currently supports macOS.", after_help=EXAMPLES)]
 struct Cli {
-    /// Session .env path (default: your platform's config directory/gphotos/.env)
+    /// Session .env path (default: your platform's config directory/google-photos-web-cli/.env)
     #[arg(long, global = true, env = "GPHOTOS_SESSION_FILE")]
     session_file: Option<PathBuf>,
     #[command(subcommand)]
@@ -71,7 +71,7 @@ struct Cli {
 enum Command {
     /// Import, check, refresh, or remove the locally saved session
     #[command(
-        after_help = "SESSION LIFETIME AND REFRESH:\n  gphotos auth status\n\nNo single guaranteed expiry exists: GPHOTOS_SESSION packages several cookies.\nGoogle can revoke it before their expiry dates. There is no supported OAuth\nrefresh token for this method. Normal commands persist returned cookie updates\nto the selected .env file, but cannot renew a revoked Google login.\n\nOn macOS, search retries once after refreshing an expired session saved by\ngphotos auth chrome. Chrome must still be signed into the same account.\n\nIf automatic refresh is unavailable or fails:\n  1. Sign in / complete any verification at photos.google.com in your browser.\n  2. macOS: gphotos auth chrome; any OS: gphotos auth cookies /path/to/cookies.txt\n  3. gphotos auth status\n  4. gphotos auth export --output new-session.env\n     On another machine: gphotos auth import new-session.env\n\nExport destinations must be new files; existing exports are not overwritten."
+        after_help = "SESSION LIFETIME AND REFRESH:\n  google-photos-web-cli auth status\n\nNo single guaranteed expiry exists: GPHOTOS_SESSION packages several cookies.\nGoogle can revoke it before their expiry dates. There is no supported OAuth\nrefresh token for this method. Normal commands persist returned cookie updates\nto the selected .env file, but cannot renew a revoked Google login.\n\nOn macOS, search retries once after refreshing an expired session saved by\ngphotos auth chrome. Chrome must still be signed into the same account.\n\nIf automatic refresh is unavailable or fails:\n  1. Sign in / complete any verification at photos.google.com in your browser.\n  2. macOS: google-photos-web-cli auth chrome; any OS: google-photos-web-cli auth cookies /path/to/cookies.txt\n  3. google-photos-web-cli auth status\n  4. google-photos-web-cli auth export --output new-session.env\n     On another machine: google-photos-web-cli auth import new-session.env\n\nExport destinations must be new files; existing exports are not overwritten."
     )]
     Auth {
         #[command(subcommand)]
@@ -79,17 +79,17 @@ enum Command {
     },
     /// Search Google's text, people, places, dates, and content; paginate long lists
     #[command(after_help = r#"SEARCH LIKE GOOGLE PHOTOS:
-  gphotos search "birthday cake"
-  gphotos search "Philadelphia October 2026"
-  gphotos search "Emma and Lucy at the beach"
+  google-photos-web-cli search "birthday cake"
+  google-photos-web-cli search "Philadelphia October 2026"
+  google-photos-web-cli search "Emma and Lucy at the beach"
 
 Enter one phrase with names, places, dates, or objects. Google interprets it
 like a search in the browser. --location and --tag add text to that same query.
 
 ADVANCED SEARCH OPTIONS:
-  gphotos search --person "Emma Example" --person "Lucy Example"
-  gphotos search --from 2026-10-01 --to 2026-10-31
-  gphotos search beach --person "Emma Example" --from 2026-10-01
+  google-photos-web-cli search --person "Emma Example" --person "Lucy Example"
+  google-photos-web-cli search --from 2026-10-01 --to 2026-10-31
+  google-photos-web-cli search beach --person "Emma Example" --from 2026-10-01
 
 Repeat --person and/or --person-id to require every selected face group in the
 same photo. Names must resolve uniquely. Use full names to disambiguate them.
@@ -101,8 +101,8 @@ returned timezone. Photos with unknown capture dates are excluded. Date-only
 searches use Google's chronological library, positioned at --to.
 
 PAGINATION AND OUTPUT:
-  gphotos search "birthday cake" --sort recent --all --limit 100 --json
-  gphotos search "birthday cake" --limit 100 --json --page-token TOKEN
+  google-photos-web-cli search "birthday cake" --sort recent --all --limit 100 --json
+  google-photos-web-cli search "birthday cake" --limit 100 --json --page-token TOKEN
 
 Default: 20 matches, up to 100 candidates when local verification is needed.
 --all follows pages automatically: default cap 10000 matches, 1000 pages, 120s
@@ -130,7 +130,7 @@ candidates_checked, complete, stop_reason, and next_page_token.
     /// Show full available photo metadata: filename, camera/lens, coordinates, dates, caption, people
     #[command(
         alias = "get",
-        after_help = "EXAMPLES:\n  gphotos inspect PHOTO_ID\n  gphotos inspect PHOTO_ID --json\n  gphotos get PHOTO_ID --json\n\nJSON includes filename, caption (also description), taken_at and uploaded_at\nwith timezone, dimensions, file size, camera make/model, lens when supplied,\nfocal length, aperture, ISO, exposure time, latitude/longitude, location labels,\nGoogle-tagged people, every detected face (index, box, assigned face group),\nalbums, source and storage attributes. Missing fields\nremain null. people_status=not_returned does not mean nobody is in the image.\nFaces are indexed left to right; use the index with 'gphotos tag'.\nThis is Google's available metadata, not a promise of every possible EXIF tag."
+        after_help = "EXAMPLES:\n  google-photos-web-cli inspect PHOTO_ID\n  google-photos-web-cli inspect PHOTO_ID --json\n  google-photos-web-cli get PHOTO_ID --json\n\nJSON includes filename, caption (also description), taken_at and uploaded_at\nwith timezone, dimensions, file size, camera make/model, lens when supplied,\nfocal length, aperture, ISO, exposure time, latitude/longitude, location labels,\nGoogle-tagged people, every detected face (index, box, assigned face group),\nalbums, source and storage attributes. Missing fields\nremain null. people_status=not_returned does not mean nobody is in the image.\nFaces are indexed left to right; use the index with 'google-photos-web-cli tag'.\nThis is Google's available metadata, not a promise of every possible EXIF tag."
     )]
     Inspect {
         id: String,
@@ -139,23 +139,23 @@ candidates_checked, complete, stop_reason, and next_page_token.
     },
     /// Download full-size media by the ID returned from search
     #[command(
-        after_help = "EXAMPLES:\n  gphotos download PHOTO_ID --dir ./photos\n  gphotos download PHOTO_ID --output ./vacation.jpg --json\n\nPrefers Google's original download URL; otherwise uses its full-size URL.\nJSON reports 'original' or 'full-size', byte count, SHA-256, and saved path.\nNever downloads a thumbnail or overwrites an existing file.\nGoogle's stored version may differ from the file originally uploaded if\nStorage Saver was used. Live Photo motion components are not exported separately."
+        after_help = "EXAMPLES:\n  google-photos-web-cli download PHOTO_ID --dir ./photos\n  google-photos-web-cli download PHOTO_ID --output ./vacation.jpg --json\n\nPrefers Google's original download URL; otherwise uses its full-size URL.\nJSON reports 'original' or 'full-size', byte count, SHA-256, and saved path.\nNever downloads a thumbnail or overwrites an existing file.\nGoogle's stored version may differ from the file originally uploaded if\nStorage Saver was used. Live Photo motion components are not exported separately."
     )]
     Download(DownloadArgs),
     /// Tag a detected face in a photo with an existing named person (writes to your library)
     #[command(after_help = r#"EXAMPLES:
-  gphotos inspect PHOTO_ID                 # list faces: index, box, tagged person
-  gphotos tag PHOTO_ID --face 1 --person "Emma Example" --dry-run
-  gphotos tag PHOTO_ID --face 1 --person "Emma Example"
-  gphotos tag PHOTO_ID --face-id FACE_ID --person-id GROUP_ID --json
+  google-photos-web-cli inspect PHOTO_ID                 # list faces: index, box, tagged person
+  google-photos-web-cli tag PHOTO_ID --face 1 --person "Emma Example" --dry-run
+  google-photos-web-cli tag PHOTO_ID --face 1 --person "Emma Example"
+  google-photos-web-cli tag PHOTO_ID --face-id FACE_ID --person-id GROUP_ID --json
 
 Assigns one detected face to an existing face group, like Info > People >
 Edit faces > Add > (person) > Done on photos.google.com. --face is the index
-shown by 'gphotos inspect' (faces sorted left to right); --face-id is the
+shown by 'google-photos-web-cli inspect' (faces sorted left to right); --face-id is the
 stable face_id from 'inspect --json'.
 
 --person must match exactly one named face group (full or unique partial name,
-same rules as 'search --person'); --person-id must be an ID from 'gphotos people'.
+same rules as 'search --person'); --person-id must be an ID from 'google-photos-web-cli people'.
 A face that is already tagged is refused unless --force; a face already tagged
 with the same person is left unchanged. New people cannot be created here.
 --dry-run prints the exact request without sending it. Nothing is retried
@@ -168,7 +168,7 @@ automatically, and the change is confirmed from Google's response."#)]
 enum AuthCommand {
     /// Import Chrome cookies on macOS; save a portable session .env
     #[command(
-        after_help = "EXAMPLES:\n  gphotos auth chrome\n  gphotos auth chrome --profile \"Profile 1\" --account 1\n\nSign in at photos.google.com in Chrome first. Choose the Chrome profile\ndirectory (Default, Profile 1, etc.). --account is the N in /u/N/ when a\nprofile has multiple Google accounts; it is independent of --profile.\nmacOS may ask you to allow access to Chrome Safe Storage.\nThe CLI validates Google Photos access before saving its private .env file.\nRe-run this command to refresh an expired session. If Chrome's encryption\nor device-bound sessions prevent reuse, cookie import may also fail; the\nCLI reports the failure rather than trying to bypass browser protections."
+        after_help = "EXAMPLES:\n  google-photos-web-cli auth chrome\n  google-photos-web-cli auth chrome --profile \"Profile 1\" --account 1\n\nSign in at photos.google.com in Chrome first. Choose the Chrome profile\ndirectory (Default, Profile 1, etc.). --account is the N in /u/N/ when a\nprofile has multiple Google accounts; it is independent of --profile.\nmacOS may ask you to allow access to Chrome Safe Storage.\nThe CLI validates Google Photos access before saving its private .env file.\nRe-run this command to refresh an expired session. If Chrome's encryption\nor device-bound sessions prevent reuse, cookie import may also fail; the\nCLI reports the failure rather than trying to bypass browser protections."
     )]
     Chrome {
         /// Chrome profile directory, e.g. Default or 'Profile 1'
@@ -180,7 +180,7 @@ enum AuthCommand {
     },
     /// Import an explicitly exported Netscape cookies.txt file
     #[command(
-        after_help = "EXAMPLE:\n  gphotos auth cookies /path/to/cookies.txt --account 0\n\nImports only Google Photos-compatible domains and unexpired cookies.\nThe source file is not deleted. Treat it as a password; don't commit or share\nit. The CLI saves the validated session in a private .env file on any platform."
+        after_help = "EXAMPLE:\n  google-photos-web-cli auth cookies /path/to/cookies.txt --account 0\n\nImports only Google Photos-compatible domains and unexpired cookies.\nThe source file is not deleted. Treat it as a password; don't commit or share\nit. The CLI saves the validated session in a private .env file on any platform."
     )]
     Cookies {
         file: PathBuf,
@@ -216,7 +216,7 @@ struct SearchArgs {
     /// Named tagged person (unique full or partial face-group name)
     #[arg(long, help_heading = "Advanced filters")]
     person: Vec<String>,
-    /// Exact face-group ID from 'gphotos people'
+    /// Exact face-group ID from 'google-photos-web-cli people'
     #[arg(long, help_heading = "Advanced filters")]
     person_id: Vec<String>,
     /// Location phrase sent unchanged to Google's search (e.g. Philly)
@@ -255,7 +255,7 @@ struct SearchArgs {
 }
 #[derive(Args)]
 struct DownloadArgs {
-    /// Photo/media ID from gphotos search (not the filename or URL)
+    /// Photo/media ID from google-photos-web-cli search (not the filename or URL)
     id: String,
     /// Exact output filename; existing files are never overwritten
     #[arg(short, long, conflicts_with = "dir")]
@@ -270,18 +270,18 @@ struct DownloadArgs {
 #[command(group = clap::ArgGroup::new("target_face").required(true).args(["face", "face_id"]))]
 #[command(group = clap::ArgGroup::new("target_person").required(true).args(["person", "person_id"]))]
 struct TagArgs {
-    /// Photo/media ID from gphotos search
+    /// Photo/media ID from google-photos-web-cli search
     id: String,
-    /// Face index from 'gphotos inspect' (0 = leftmost face)
+    /// Face index from 'google-photos-web-cli inspect' (0 = leftmost face)
     #[arg(long)]
     face: Option<usize>,
-    /// Exact face_id from 'gphotos inspect --json'
+    /// Exact face_id from 'google-photos-web-cli inspect --json'
     #[arg(long)]
     face_id: Option<String>,
     /// Existing named person (unique full or partial face-group name)
     #[arg(long)]
     person: Option<String>,
-    /// Exact face-group ID from 'gphotos people'
+    /// Exact face-group ID from 'google-photos-web-cli people'
     #[arg(long)]
     person_id: Option<String>,
     /// Replace an existing tag on that face
@@ -298,7 +298,7 @@ fn run_tag(client: &mut PhotosClient, args: &TagArgs) -> Result<()> {
     let face = match (&args.face, &args.face_id) {
         (Some(n), _) => photo.faces.get(*n).with_context(|| {
             format!(
-                "Photo has {} detected face(s); --face must be below that. Run 'gphotos inspect {}'",
+                "Photo has {} detected face(s); --face must be below that. Run 'google-photos-web-cli inspect {}'",
                 photo.faces.len(),
                 args.id
             )
@@ -309,14 +309,14 @@ fn run_tag(client: &mut PhotosClient, args: &TagArgs) -> Result<()> {
             .find(|f| f.face_id == *face_id)
             .with_context(|| {
                 format!(
-                    "No detected face {face_id:?} in this photo. Run 'gphotos inspect {} --json'",
+                    "No detected face {face_id:?} in this photo. Run 'google-photos-web-cli inspect {} --json'",
                     args.id
                 )
             })?,
         (None, None) => bail!("Choose --face N or --face-id ID"),
     };
     let person = client.resolve_person(args.person.as_deref(), args.person_id.as_deref())?;
-    let label = |p: &google_photos_cli::protocol::Person| {
+    let label = |p: &google_photos_web_cli::protocol::Person| {
         p.name
             .clone()
             .unwrap_or_else(|| format!("unnamed face group {}", p.id))
@@ -331,8 +331,11 @@ fn run_tag(client: &mut PhotosClient, args: &TagArgs) -> Result<()> {
         _ if args.dry_run => "dry_run",
         _ => "tagged",
     };
-    let payload =
-        google_photos_cli::protocol::tag_face_payload(&photo.media_key, &face.face_id, &person.id);
+    let payload = google_photos_web_cli::protocol::tag_face_payload(
+        &photo.media_key,
+        &face.face_id,
+        &person.id,
+    );
     if status == "tagged" {
         eprintln!(
             "Tagging face {} in {} as {}…",
@@ -378,7 +381,7 @@ fn run_tag(client: &mut PhotosClient, args: &TagArgs) -> Result<()> {
             println!("f.req payload: {payload}");
         }
         _ => println!(
-            "Tagged face {} as {}. Check with 'gphotos inspect {}'.",
+            "Tagged face {} as {}. Check with 'google-photos-web-cli inspect {}'.",
             face.index,
             label(&person),
             photo.id
@@ -438,7 +441,7 @@ fn with_search_session<T>(mut search: impl FnMut(&mut PhotosClient) -> Result<T>
         .account_email()
         .is_some_and(|email| email.eq_ignore_ascii_case(&expected_email))
     {
-        bail!("Chrome is signed into a different Google Photos account. Sign into the original account and run 'gphotos auth chrome'");
+        bail!("Chrome is signed into a different Google Photos account. Sign into the original account and run 'google-photos-web-cli auth chrome'");
     }
     client.enable_chrome_refresh();
     client.save()?;
@@ -493,7 +496,7 @@ fn run(cli: Cli) -> Result<()> {
                         println!("{}", session.portable_token()?);
                     } else if let Some(path) = output {
                         session.export(&path)?;
-                        println!("Private session exported to {}. Copy it securely to the other machine and run 'gphotos auth import FILE'.",path.display());
+                        println!("Private session exported to {}. Copy it securely to the other machine and run 'google-photos-web-cli auth import FILE'.",path.display());
                     }
                 }
                 AuthCommand::Status { json } => with_saved(|client| {
@@ -522,11 +525,11 @@ fn run(cli: Cli) -> Result<()> {
             println!("Local session file cleared. Chrome and exported copies remain signed in. Unset GPHOTOS_SESSION too if you supplied it in your shell.");
         }
         Command::Search(args) => {
-            let dates = google_photos_cli::search::DateRange::parse(
+            let dates = google_photos_web_cli::search::DateRange::parse(
                 args.from.as_deref(),
                 args.to.as_deref(),
             )?;
-            let query = google_photos_cli::search::compose_query(
+            let query = google_photos_web_cli::search::compose_query(
                 args.query.as_deref(),
                 args.location.as_deref(),
                 &args.tag,
@@ -536,7 +539,7 @@ fn run(cli: Cli) -> Result<()> {
                 && args.person_id.is_empty()
                 && !dates.active()
             {
-                bail!("Provide a search query, --person NAME, --location PLACE, --tag TERM, or --from/--to dates. See 'gphotos help search'");
+                bail!("Provide a search query, --person NAME, --location PLACE, --tag TERM, or --from/--to dates. See 'google-photos-web-cli help search'");
             }
             let count = args.person.len() + args.person_id.len();
             if count > 1 || (count > 0 && (!query.is_empty() || dates.active())) {
@@ -723,7 +726,7 @@ fn run(cli: Cli) -> Result<()> {
     }
     Ok(())
 }
-fn print_inspection(info: &google_photos_cli::protocol::Inspection) {
+fn print_inspection(info: &google_photos_web_cli::protocol::Inspection) {
     println!("Photo: {}", info.id);
     println!(
         "Filename: {}",
@@ -796,7 +799,7 @@ fn print_inspection(info: &google_photos_cli::protocol::Inspection) {
         if info.faces.is_empty() {
             println!("Faces: none detected");
         } else {
-            println!("Faces (left to right; use the index with 'gphotos tag'):");
+            println!("Faces (left to right; use the index with 'google-photos-web-cli tag'):");
             for face in &info.faces {
                 let place = match &face.box_px {
                     Some(b) => format!("x={} y={} {}×{} px", b.x, b.y, b.width, b.height),
@@ -852,7 +855,7 @@ mod argument_tests {
     #[test]
     fn one_search_command_accepts_all_search_tactics_and_long_list_controls() {
         let cli = Cli::try_parse_from([
-            "gphotos",
+            "google-photos-web-cli",
             "search",
             "birthday",
             "--person",
@@ -888,7 +891,7 @@ mod argument_tests {
     #[test]
     fn free_form_browser_query_is_a_single_unchanged_argument() {
         let query = "Alice and Bob in Philadelphia October 2026";
-        let cli = Cli::try_parse_from(["gphotos", "search", query]).unwrap();
+        let cli = Cli::try_parse_from(["google-photos-web-cli", "search", query]).unwrap();
         let Command::Search(args) = cli.command else {
             panic!("wrong command")
         };

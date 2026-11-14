@@ -1,6 +1,6 @@
 //! Opt-in only: uses your own saved Google Photos session. CI never enables this.
 use anyhow::{ensure, Context, Result};
-use google_photos_cli::{
+use google_photos_web_cli::{
     auth,
     client::{PhotosClient, SearchOptions, SearchSort},
     search::{compose_query, DateRange},
